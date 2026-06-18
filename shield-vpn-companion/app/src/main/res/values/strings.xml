@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Shield VPN Companion</string>
+    <string name="vpn_notification_channel_name">VPN Tunnel</string>
+    <string name="vpn_notification_channel_description">Foreground notification while WireGuard tunnel is active</string>
+    <string name="vpn_notification_title">VPN Active</string>
+    <string name="vpn_notification_text">WireGuard tunnel is running</string>
+    <string name="http_server_listening">Listening for config on port %1$d</string>
+    <string name="status_connected">Connected</string>
+    <string name="status_disconnected">Disconnected</string>
+    <string name="status_connecting">Connecting…</string>
+</resources>
