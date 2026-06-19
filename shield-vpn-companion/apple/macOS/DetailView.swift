@@ -13,6 +13,20 @@ struct DetailView: View {
             Text(coordinator.tunnelManager.status.rawValue.capitalized)
                 .font(.title2)
 
+            if !coordinator.tunnelManager.wgQuickAvailable {
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Label("wireguard-tools not found", systemImage: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.orange)
+                        Text("brew install wireguard-tools")
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(4)
+                }
+            }
+
             GroupBox("Auth Token") {
                 Text(coordinator.token)
                     .font(.system(.body, design: .monospaced))
