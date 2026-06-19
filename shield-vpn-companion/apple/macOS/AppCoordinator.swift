@@ -6,9 +6,8 @@ final class AppCoordinator: ObservableObject, HTTPServerDelegate {
 
     let tunnelManager = TunnelManager(
         commandRunner: SystemCommandRunner(),
-        wgQuickPath: "/opt/homebrew/bin/wg-quick",
-        configDir: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("ShieldVPN", isDirectory: true)
+        wgQuickPath: TunnelManager.findWgQuick() ?? "/opt/homebrew/bin/wg-quick",
+        configDir: FileManager.default.temporaryDirectory
     )
     private var httpServer: HTTPServer?
     private var mdnsAnnouncer: MdnsAnnouncer?
