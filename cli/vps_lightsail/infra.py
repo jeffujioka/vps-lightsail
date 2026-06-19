@@ -208,6 +208,44 @@ grep -q "{public}" /etc/wireguard/wg0.conf 2>/dev/null || {{
     return private, public
 
 
+def remove_peer(server_ip: str, key_path: Path, peer_public_key: str) -> None:
+    """Remove a WireGuard peer from the server."""
+    remove_script = f"""
+wg set wg0 peer {peer_public_key} remove
+sed -i '/\\[Peer\\]/{{
+  N; /PublicKey = {peer_public_key}/{{
+    N; d
+  }}
+}}' /etc/wireguard/wg0.conf
+"""
+    subprocess.run(
+        ["ssh", "-i", str(key_path), "-o", "StrictHostKeyChecking=no",
+         f"ubuntu@{server_ip}", "sudo bash -s"],
+        input=remove_script, capture_output=True, text=True, check=True,
+    )
+
+
+def list_peers(server_ip: str, key_path: Path) -> list[dict[str, str]]:
+    """List active WireGuard peers on the server. Returns list of {public_key, allowed_ips, latest_handshake, transfer}."""
+    output = run([
+        "ssh", "-i", str(key_path), "-o", "StrictHostKeyChecking=no",
+        f"ubuntu@{server_ip}", "sudo wg show wg0 dump",
+    ])
+    peers = []
+    for line in output.strip().splitlines()[1:]:  # skip interface line
+        parts = line.split("\t")
+        if len(parts) >= 4:
+            peers.append({
+                "public_key": parts[0],
+                "endpoint": parts[2],
+                "allowed_ips": parts[3],
+                "latest_handshake": parts[4] if len(parts) > 4 else "0",
+                "transfer_rx": parts[5] if len(parts) > 5 else "0",
+                "transfer_tx": parts[6] if len(parts) > 6 else "0",
+            })
+    return peers
+
+
 def build_conf(private_key: str, peer_ip: str, server_public: str, endpoint: str) -> str:
     return f"""[Interface]
 PrivateKey = {private_key}
