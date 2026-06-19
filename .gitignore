@@ -20,3 +20,13 @@ crash.*.log
 
 # SSH keys
 *.pem
+
+# Xcode
+shield-vpn-companion/apple/VPSLightsail.xcodeproj/
+shield-vpn-companion/apple/.build/
+*.xcuserdata
+DerivedData/
+
+# Android
+shield-vpn-companion/android/.gradle/
+shield-vpn-companion/android/app/build/
