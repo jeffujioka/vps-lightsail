@@ -44,16 +44,45 @@ public final class HTTPServer: @unchecked Sendable {
 
     private func handleConnection(_ connection: NWConnection) {
         connection.start(queue: .global(qos: .userInitiated))
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, _, _ in
-            guard let self, let data else {
-                connection.cancel()
-                return
+        receiveAll(connection: connection, buffer: Data())
+    }
+
+    private func receiveAll(connection: NWConnection, buffer: Data) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, _ in
+            guard let self else { connection.cancel(); return }
+            guard let data else { connection.cancel(); return }
+
+            var accumulated = buffer
+            accumulated.append(data)
+
+            if self.hasCompleteRequest(accumulated) || isComplete {
+                let response = self.route(accumulated)
+                connection.send(content: response.serialize(), completion: .contentProcessed { _ in
+                    connection.cancel()
+                })
+            } else {
+                self.receiveAll(connection: connection, buffer: accumulated)
             }
-            let response = self.route(data)
-            connection.send(content: response.serialize(), completion: .contentProcessed { _ in
-                connection.cancel()
-            })
         }
+    }
+
+    private func hasCompleteRequest(_ data: Data) -> Bool {
+        guard let str = String(data: data, encoding: .utf8) else { return true }
+        guard let headerEnd = str.range(of: "\r\n\r\n") else { return false }
+        let headerSection = str[str.startIndex..<headerEnd.lowerBound]
+        let bodyStart = headerEnd.upperBound
+        let currentBodyLength = str[bodyStart...].utf8.count
+
+        for line in headerSection.split(separator: "\r\n") {
+            let lower = line.lowercased()
+            if lower.hasPrefix("content-length:") {
+                let value = lower.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
+                if let expected = Int(value) {
+                    return currentBodyLength >= expected
+                }
+            }
+        }
+        return true
     }
 
     private func route(_ data: Data) -> HTTPResponse {
