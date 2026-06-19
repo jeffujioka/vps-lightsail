@@ -10,24 +10,23 @@ final class AppCoordinator: ObservableObject, HTTPServerDelegate {
         configDir: FileManager.default.temporaryDirectory
     )
     private var httpServer: HTTPServer?
-    private var mdnsAnnouncer: MdnsAnnouncer?
 
     let token = TokenManager.token
 
+    init() {
+        start()
+    }
+
     func start() {
+        guard httpServer == nil else { return }
         let server = HTTPServer(token: token)
         server.delegate = self
         server.start()
         httpServer = server
-
-        let announcer = MdnsAnnouncer()
-        announcer.start()
-        mdnsAnnouncer = announcer
     }
 
     func stop() {
         httpServer?.stop()
-        mdnsAnnouncer?.stop()
     }
 
     nonisolated func httpServer(_ server: HTTPServer, didReceiveConfig body: String) throws {
