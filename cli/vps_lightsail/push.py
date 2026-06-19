@@ -46,6 +46,24 @@ def push_config_from_file(device: Device, conf_path: Path, token: str) -> PushRe
     return push_config(device, config, token)
 
 
+def disconnect_device(device: Device, token: str) -> PushResult:
+    url = f"http://{device.ip}:{device.port}/disconnect"
+    try:
+        resp = httpx.post(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10.0,
+        )
+        return PushResult(
+            device=device,
+            success=resp.status_code == 200,
+            status_code=resp.status_code,
+            error=None if resp.status_code == 200 else resp.text,
+        )
+    except httpx.HTTPError as e:
+        return PushResult(device=device, success=False, error=str(e))
+
+
 def check_health(device: Device) -> bool:
     url = f"http://{device.ip}:{device.port}/health"
     try:
