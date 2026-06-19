@@ -19,9 +19,15 @@ public final class HTTPServer: @unchecked Sendable {
         let params = NWParameters.tcp
         params.includePeerToPeer = true
         self.listener = try! NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
+        let entry = "token=\(token)"
+        var txtData = Data()
+        txtData.append(UInt8(entry.utf8.count))
+        txtData.append(contentsOf: entry.utf8)
         listener.service = NWListener.Service(
             name: "vps-lightsail",
-            type: ShieldVPNCore.serviceType
+            type: ShieldVPNCore.serviceType,
+            domain: nil,
+            txtRecord: txtData
         )
     }
 
