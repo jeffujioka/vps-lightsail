@@ -7,8 +7,10 @@ import os
 import sys
 from pathlib import Path
 
+import httpx
+
 from .discovery import Device, DeviceDiscovery
-from .push import check_health, push_config, push_config_from_file
+from .push import check_health, disconnect_device, push_config, push_config_from_file
 from . import infra
 
 REGIONS = {
@@ -63,8 +65,9 @@ EXAMPLES:
     push_p.add_argument("--region", default=os.environ.get("AWS_REGION", "sa-east-1"))
     push_p.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "personal"))
 
-    sub.add_parser("status", help="Show WireGuard peers and handshake info").add_argument(
-        "--region", default=os.environ.get("AWS_REGION", "sa-east-1"))
+    status_p = sub.add_parser("status", help="Show WireGuard peers and handshake info")
+    status_p.add_argument("--region", default=os.environ.get("AWS_REGION", "sa-east-1"))
+    status_p.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "personal"))
 
     scan_p = sub.add_parser("scan", help="Scan for devices on the network (no push)")
     scan_p.add_argument("--timeout", type=float, default=5.0)
@@ -72,6 +75,12 @@ EXAMPLES:
     health_p = sub.add_parser("health", help="Check device health endpoint")
     health_p.add_argument("--device", help="Device IP[:port] (skip mDNS scan)")
     health_p.add_argument("--timeout", type=float, default=5.0)
+
+    disc_p = sub.add_parser("disconnect", help="Disconnect devices and remove peers from server")
+    disc_p.add_argument("--device", help="Device IP[:port] (skip mDNS scan)")
+    disc_p.add_argument("--timeout", type=float, default=5.0)
+    disc_p.add_argument("--region", default=os.environ.get("AWS_REGION", "sa-east-1"))
+    disc_p.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "personal"))
 
     args = parser.parse_args()
 
@@ -82,6 +91,7 @@ EXAMPLES:
         "status": cmd_status,
         "scan": cmd_scan,
         "health": cmd_health,
+        "disconnect": cmd_disconnect,
     }
 
     if args.command in commands:
@@ -96,15 +106,16 @@ def cmd_interactive() -> None:
     print("│  vps-lightsail — Personal WireGuard VPN  │")
     print("└─────────────────────────────────────────┘")
     print()
-    print("  1) Setup     — create VPS + WireGuard + push to devices")
-    print("  2) Push      — scan network + push config to devices")
-    print("  3) Status    — show WireGuard peers")
-    print("  4) Teardown  — destroy all resources")
-    print("  5) Scan      — scan for devices (no push)")
+    print("  1) Setup      — create VPS + WireGuard + push to devices")
+    print("  2) Push       — scan network + push config to devices")
+    print("  3) Status     — tunnel status + public IP + server peers")
+    print("  4) Disconnect — disconnect devices + remove peers")
+    print("  5) Teardown   — destroy all resources")
+    print("  6) Scan       — scan for devices (no push)")
     print("  q) Quit")
     print()
 
-    choice = input("  Choose [1-5, q]: ").strip().lower()
+    choice = input("  Choose [1-6, q]: ").strip().lower()
 
     if choice == "1":
         region = _ask_region()
@@ -122,6 +133,13 @@ def cmd_interactive() -> None:
         ns = argparse.Namespace(region=region, profile=os.environ.get("AWS_PROFILE", "personal"))
         cmd_status(ns)
     elif choice == "4":
+        ns = argparse.Namespace(
+            device=None, timeout=5.0,
+            region=os.environ.get("AWS_REGION", "sa-east-1"),
+            profile=os.environ.get("AWS_PROFILE", "personal"),
+        )
+        cmd_disconnect(ns)
+    elif choice == "5":
         region = os.environ.get("AWS_REGION", "sa-east-1")
         confirm = input(f"  Destroy all resources in {region}? [y/N]: ").strip().lower()
         if confirm != "y":
@@ -129,7 +147,7 @@ def cmd_interactive() -> None:
             return
         ns = argparse.Namespace(region=region, profile=os.environ.get("AWS_PROFILE", "personal"))
         cmd_teardown(ns)
-    elif choice == "5":
+    elif choice == "6":
         ns = argparse.Namespace(timeout=5.0)
         cmd_scan(ns)
     elif choice in ("q", ""):
@@ -154,8 +172,62 @@ def cmd_teardown(args: argparse.Namespace) -> None:
 
 
 def cmd_status(args: argparse.Namespace) -> None:
+    """Show VPN status: local tunnel, public IP, and server peers."""
+    import shutil
+    import subprocess
+
     profile = getattr(args, "profile", os.environ.get("AWS_PROFILE", "personal"))
-    infra.status(region=args.region, profile=profile)
+
+    # Local WireGuard status
+    print("── Local Tunnel ──")
+    wg_bin = shutil.which("wg")
+    if wg_bin:
+        try:
+            local_wg = subprocess.run(
+                ["sudo", wg_bin, "show"], capture_output=True, text=True, timeout=5,
+            )
+            if local_wg.returncode == 0 and local_wg.stdout.strip():
+                print(local_wg.stdout.strip())
+            else:
+                print("  Not connected")
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            print("  Not connected")
+    else:
+        print("  wg not installed (brew install wireguard-tools)")
+
+    # Public IP info
+    print("\n── Public IP ──")
+    try:
+        resp = httpx.get("https://ipinfo.io/json", timeout=5.0)
+        if resp.status_code == 200:
+            info = resp.json()
+            print(f"  IP:      {info.get('ip', '?')}")
+            print(f"  City:    {info.get('city', '?')}")
+            print(f"  Country: {info.get('country', '?')}")
+            print(f"  Org:     {info.get('org', '?')}")
+        else:
+            print(f"  (ipinfo.io returned {resp.status_code})")
+    except Exception as e:
+        print(f"  (could not reach ipinfo.io: {e})")
+
+    # Server-side peers (if VPN infra is running)
+    key_path = Path.home() / ".ssh" / "vps-vpn.pem"
+    if key_path.exists():
+        print("\n── Server Peers ──")
+        try:
+            server_ip = infra.aws([
+                "get-static-ip",
+                "--static-ip-name", infra.STATIC_IP_NAME,
+                "--query", "staticIp.ipAddress",
+                "--output", "text",
+            ], profile, args.region)
+            output = infra.run([
+                "ssh", "-i", str(key_path), "-o", "StrictHostKeyChecking=no",
+                f"ubuntu@{server_ip}", "sudo wg show",
+            ])
+            print(output)
+        except Exception:
+            print("  (could not reach server)")
 
 
 def cmd_push(args: argparse.Namespace) -> None:
@@ -316,6 +388,40 @@ def cmd_health(args: argparse.Namespace) -> None:
     else:
         print(f"  ❌ {device.name} ({device.ip}:{device.port}) — unreachable")
         sys.exit(1)
+
+
+def cmd_disconnect(args: argparse.Namespace) -> None:
+    """Disconnect devices (wg-quick down) and remove peers from server."""
+    if args.device:
+        parts = args.device.split(":")
+        ip = parts[0]
+        port = int(parts[1]) if len(parts) > 1 else 8080
+        devices = [Device(name=ip, ip=ip, port=port)]
+    else:
+        timeout = getattr(args, "timeout", 5.0)
+        print(f"Scanning for devices ({timeout}s)...")
+        devices = DeviceDiscovery(timeout=timeout).scan()
+
+    if not devices:
+        print("  No devices found.")
+        return
+
+    selected = _select_devices(devices)
+    if not selected:
+        return
+
+    for device in selected:
+        token = _get_token(device, args)
+        if not token:
+            print(f"  No token for {device.name}, skipping")
+            continue
+
+        print(f"Disconnecting {device.name} ({device.ip})...")
+        result = disconnect_device(device, token)
+        if result.success:
+            print(f"  {device.name} disconnected")
+        else:
+            print(f"  {device.name}: {result.error or f'HTTP {result.status_code}'}")
 
 
 if __name__ == "__main__":
