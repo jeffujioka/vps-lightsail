@@ -72,4 +72,9 @@ public final class TunnelManager: ObservableObject {
             stopStatusMonitor()
         }
     }
+
+    public static func findWgQuick() -> String? {
+        let paths = ["/opt/homebrew/bin/wg-quick", "/usr/local/bin/wg-quick"]
+        return paths.first { FileManager.default.fileExists(atPath: $0) }
+    }
 }
