@@ -1,0 +1,474 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		01970EE315E4371EC4458846 /* AppCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F3C37D05377AB80793FE5DF /* AppCoordinator.swift */; };
+		A1B2C3D4E5F60001A2B3C4D5 /* CommandRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60000A2B3C4D5 /* CommandRunner.swift */; };
+		04D7C7CAD800E2B5F5875AE3 /* VPSLightsailApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BD43AD983527BA6FC8CD22B /* VPSLightsailApp.swift */; };
+		145D8E88FB3B3E374A8C8B53 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15445C409AC66FA0A5BA17AA /* ContentView.swift */; };
+		36E06B1987F1905862DD30CB /* ShieldVPNCore in Frameworks */ = {isa = PBXBuildFile; productRef = D1F3EB26D0BA276035FE8821 /* ShieldVPNCore */; };
+		439EB1F6C92DFE9B9AC08D7A /* MenuBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6490DAC4F0E9C8A020E139E9 /* MenuBarView.swift */; };
+		65D6B725F563E60904E2D734 /* DetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F69FBD86808EEB3062D4C76B /* DetailView.swift */; };
+		890D036FDA9BC48805160A3F /* VPSLightsailApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA05C5B8255BBF4F71E06A74 /* VPSLightsailApp.swift */; };
+		A05583FA2194503891DDC523 /* ShieldVPNCore in Frameworks */ = {isa = PBXBuildFile; productRef = 3065227441AF5A2264482836 /* ShieldVPNCore */; };
+		BD995E01D250B9C5FE0AD940 /* AppCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = CE7CBA3A9CF56A552D6A3583 /* AppCoordinator.swift */; };
+		E6E1291AC8EBF004A5C1090F /* ShieldVPNCore in Frameworks */ = {isa = PBXBuildFile; productRef = 28758FB38E0EC67F99E11198 /* ShieldVPNCore */; };
+		EA9E00C2DA1E5A9544D35E07 /* ShieldVPNCore in Frameworks */ = {isa = PBXBuildFile; productRef = 777607F9816C14605C2BD63E /* ShieldVPNCore */; };
+/* End PBXBuildFile section */
+
+
+
+/* Begin PBXFileReference section */
+		A1B2C3D4E5F60000A2B3C4D5 /* CommandRunner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandRunner.swift; sourceTree = "<group>"; };
+		15445C409AC66FA0A5BA17AA /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		449E81DEABDCF85354F4FC80 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		47F0B20E06B54E7C7FB38150 /* VPSLightsail-iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "VPSLightsail-iOS.entitlements"; sourceTree = "<group>"; };
+		4BD43AD983527BA6FC8CD22B /* VPSLightsailApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VPSLightsailApp.swift; sourceTree = "<group>"; };
+		4F3C37D05377AB80793FE5DF /* AppCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoordinator.swift; sourceTree = "<group>"; };
+		5721B1AEF17161A9A6C71D77 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		630D2E67293DF513543D5B13 /* ShieldVPNCore */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ShieldVPNCore; sourceTree = SOURCE_ROOT; };
+		6490DAC4F0E9C8A020E139E9 /* MenuBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarView.swift; sourceTree = "<group>"; };
+		8C632E279C33B0B9E241FB89 /* VPSLightsail-macOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "VPSLightsail-macOS.entitlements"; sourceTree = "<group>"; };
+		911FD691B119203BBE422F08 /* vps-lightsail macOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "vps-lightsail macOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA05C5B8255BBF4F71E06A74 /* VPSLightsailApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VPSLightsailApp.swift; sourceTree = "<group>"; };
+		B16914AEF48366C249707E63 /* VPSLightsail-iOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; name = "VPSLightsail-iOS.app"; path = "vps-lightsail iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		CE7CBA3A9CF56A552D6A3583 /* AppCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppCoordinator.swift; sourceTree = "<group>"; };
+		F69FBD86808EEB3062D4C76B /* DetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetailView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		5D583FB39FC49B4E719629FC /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				36E06B1987F1905862DD30CB /* ShieldVPNCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A7B12A584C81C2F58D8FA020 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A05583FA2194503891DDC523 /* ShieldVPNCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		24804878561620B478E36735 = {
+			isa = PBXGroup;
+			children = (
+				452874848F03D38C685E615C /* iOS */,
+				F0A93F1CB4994773B201A43D /* macOS */,
+				B176333217F688C2A4166209 /* Packages */,
+				F1DE9DDECB569739168395B5 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		452874848F03D38C685E615C /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				CE7CBA3A9CF56A552D6A3583 /* AppCoordinator.swift */,
+				15445C409AC66FA0A5BA17AA /* ContentView.swift */,
+				5721B1AEF17161A9A6C71D77 /* Info.plist */,
+				47F0B20E06B54E7C7FB38150 /* VPSLightsail-iOS.entitlements */,
+				AA05C5B8255BBF4F71E06A74 /* VPSLightsailApp.swift */,
+			);
+			path = iOS;
+			sourceTree = "<group>";
+		};
+		B176333217F688C2A4166209 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				630D2E67293DF513543D5B13 /* ShieldVPNCore */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		F0A93F1CB4994773B201A43D /* macOS */ = {
+			isa = PBXGroup;
+			children = (
+				4F3C37D05377AB80793FE5DF /* AppCoordinator.swift */,
+				A1B2C3D4E5F60000A2B3C4D5 /* CommandRunner.swift */,
+				F69FBD86808EEB3062D4C76B /* DetailView.swift */,
+				449E81DEABDCF85354F4FC80 /* Info.plist */,
+				6490DAC4F0E9C8A020E139E9 /* MenuBarView.swift */,
+				8C632E279C33B0B9E241FB89 /* VPSLightsail-macOS.entitlements */,
+				4BD43AD983527BA6FC8CD22B /* VPSLightsailApp.swift */,
+			);
+			path = macOS;
+			sourceTree = "<group>";
+		};
+		F1DE9DDECB569739168395B5 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B16914AEF48366C249707E63 /* VPSLightsail-iOS.app */,
+				911FD691B119203BBE422F08 /* vps-lightsail macOS.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		48C61C404593F2974FAF6CB7 /* VPSLightsail-iOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 64EB58BBC9BCBEFEBDC2A7EC /* Build configuration list for PBXNativeTarget "VPSLightsail-iOS" */;
+			buildPhases = (
+				14D7BEC262F584BA33E04AF0 /* Sources */,
+				5D583FB39FC49B4E719629FC /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "VPSLightsail-iOS";
+			packageProductDependencies = (
+				D1F3EB26D0BA276035FE8821 /* ShieldVPNCore */,
+			);
+			productName = "VPSLightsail-iOS";
+			productReference = B16914AEF48366C249707E63 /* VPSLightsail-iOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+		548FCF793A474DCAFE61FFA5 /* VPSLightsail-macOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 33255EB5772480A008EA4148 /* Build configuration list for PBXNativeTarget "VPSLightsail-macOS" */;
+			buildPhases = (
+				F6B054A663754B4A4FF598A0 /* Sources */,
+				A7B12A584C81C2F58D8FA020 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "VPSLightsail-macOS";
+			packageProductDependencies = (
+				3065227441AF5A2264482836 /* ShieldVPNCore */,
+			);
+			productName = "VPSLightsail-macOS";
+			productReference = 911FD691B119203BBE422F08 /* vps-lightsail macOS.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E2B0DCC680082AAB9A94584F /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1500;
+			};
+			buildConfigurationList = C1FFBA3A94C5AECDBBA91AEF /* Build configuration list for PBXProject "VPSLightsail" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 24804878561620B478E36735;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				18AC7493271FEC7E0B943C8F /* XCLocalSwiftPackageReference "ShieldVPNCore" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = F1DE9DDECB569739168395B5 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				48C61C404593F2974FAF6CB7 /* VPSLightsail-iOS */,
+				548FCF793A474DCAFE61FFA5 /* VPSLightsail-macOS */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		14D7BEC262F584BA33E04AF0 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BD995E01D250B9C5FE0AD940 /* AppCoordinator.swift in Sources */,
+				145D8E88FB3B3E374A8C8B53 /* ContentView.swift in Sources */,
+				890D036FDA9BC48805160A3F /* VPSLightsailApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F6B054A663754B4A4FF598A0 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				01970EE315E4371EC4458846 /* AppCoordinator.swift in Sources */,
+				A1B2C3D4E5F60001A2B3C4D5 /* CommandRunner.swift in Sources */,
+				65D6B725F563E60904E2D734 /* DetailView.swift in Sources */,
+				439EB1F6C92DFE9B9AC08D7A /* MenuBarView.swift in Sources */,
+				04D7C7CAD800E2B5F5875AE3 /* VPSLightsailApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+
+/* Begin XCBuildConfiguration section */
+		1DE95420ABC675A3D7753CA5 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "macOS/VPSLightsail-macOS.entitlements";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEVELOPMENT_TEAM = C25SVMLVR3;
+				INFOPLIST_FILE = macOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.jeffujioka.vpslightsail.macos;
+				PRODUCT_NAME = "vps-lightsail macOS";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		495CE6686BFD7EADCE1E997A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "iOS/VPSLightsail-iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = iOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.jeffujioka.vpslightsail.ios;
+				PRODUCT_NAME = "vps-lightsail iOS";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		5C268F255BBE9BFEA098FD0D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "iOS/VPSLightsail-iOS.entitlements";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = iOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.jeffujioka.vpslightsail.ios;
+				PRODUCT_NAME = "vps-lightsail iOS";
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B60C8B8699E95E34F19953A2 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		DBBC8647EF9A293BD75C30D7 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "macOS/VPSLightsail-macOS.entitlements";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				DEVELOPMENT_TEAM = C25SVMLVR3;
+				INFOPLIST_FILE = macOS/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.jeffujioka.vpslightsail.macos;
+				PRODUCT_NAME = "vps-lightsail macOS";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		DDC48779B33570CD463273E9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		33255EB5772480A008EA4148 /* Build configuration list for PBXNativeTarget "VPSLightsail-macOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1DE95420ABC675A3D7753CA5 /* Debug */,
+				DBBC8647EF9A293BD75C30D7 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		64EB58BBC9BCBEFEBDC2A7EC /* Build configuration list for PBXNativeTarget "VPSLightsail-iOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5C268F255BBE9BFEA098FD0D /* Debug */,
+				495CE6686BFD7EADCE1E997A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C1FFBA3A94C5AECDBBA91AEF /* Build configuration list for PBXProject "VPSLightsail" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B60C8B8699E95E34F19953A2 /* Debug */,
+				DDC48779B33570CD463273E9 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		18AC7493271FEC7E0B943C8F /* XCLocalSwiftPackageReference "ShieldVPNCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ShieldVPNCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+
+/* Begin XCSwiftPackageProductDependency section */
+		28758FB38E0EC67F99E11198 /* ShieldVPNCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ShieldVPNCore;
+		};
+		3065227441AF5A2264482836 /* ShieldVPNCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ShieldVPNCore;
+		};
+		777607F9816C14605C2BD63E /* ShieldVPNCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ShieldVPNCore;
+		};
+		D1F3EB26D0BA276035FE8821 /* ShieldVPNCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ShieldVPNCore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = E2B0DCC680082AAB9A94584F /* Project object */;
+}
