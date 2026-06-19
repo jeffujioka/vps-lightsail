@@ -1,97 +1,75 @@
 import Foundation
-import NetworkExtension
-
-public enum TunnelStatus: String, Sendable {
-    case disconnected
-    case connecting
-    case connected
-    case disconnecting
-}
 
 @MainActor
 public final class TunnelManager: ObservableObject {
 
     @Published public private(set) var status: TunnelStatus = .disconnected
 
-    private var manager: NETunnelProviderManager?
-    private let appGroup = "group.com.jeffujioka.vpslightsail"
+    private let commandRunner: CommandRunner
+    private let wgQuickPath: String
+    private let configDir: URL
+    private let confName = "wg-vpslightsail.conf"
+    private var statusTimer: Timer?
 
-    public init() {
-        Task { await loadManager() }
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(vpnStatusChanged),
-            name: .NEVPNStatusDidChange, object: nil
-        )
+    public init(commandRunner: CommandRunner, wgQuickPath: String, configDir: URL) {
+        self.commandRunner = commandRunner
+        self.wgQuickPath = wgQuickPath
+        self.configDir = configDir
     }
 
     public func connect(config: TunnelConfig) async throws {
-        let manager = try await getOrCreateManager()
+        guard FileManager.default.fileExists(atPath: wgQuickPath) else {
+            throw TunnelError.wgQuickNotFound
+        }
 
-        let defaults = UserDefaults(suiteName: appGroup)
-        defaults?.set(config.toConfString(), forKey: "tunnelConfig")
+        status = .connecting
+        let confPath = configDir.appendingPathComponent(confName)
 
-        let proto = NETunnelProviderProtocol()
-        proto.providerBundleIdentifier = tunnelBundleId()
-        proto.serverAddress = config.endpoint
-        proto.providerConfiguration = ["config": config.toConfString()]
-
-        manager.protocolConfiguration = proto
-        manager.localizedDescription = "vps-lightsail"
-        manager.isEnabled = true
-
-        let onDemandRule = NEOnDemandRuleConnect()
-        onDemandRule.interfaceTypeMatch = .any
-        manager.onDemandRules = [onDemandRule]
-        manager.isOnDemandEnabled = true
-
-        try await manager.saveToPreferences()
-        try await manager.loadFromPreferences()
-        try manager.connection.startVPNTunnel()
+        do {
+            try config.toConfString().write(to: confPath, atomically: true, encoding: .utf8)
+            try commandRunner.runPrivileged("sudo wg-quick up \(confPath.path)")
+            status = .connected
+            startStatusMonitor()
+        } catch {
+            status = .disconnected
+            throw error
+        }
     }
 
     public func disconnect() async throws {
-        guard let manager else { return }
-        manager.isOnDemandEnabled = false
-        try await manager.saveToPreferences()
-        manager.connection.stopVPNTunnel()
+        let confPath = configDir.appendingPathComponent(confName)
+        guard FileManager.default.fileExists(atPath: confPath.path) else { return }
+
+        status = .disconnecting
+        do {
+            try commandRunner.runPrivileged("sudo wg-quick down \(confPath.path)")
+        } catch {}
+        status = .disconnected
+        stopStatusMonitor()
     }
 
-    private func loadManager() async {
-        let managers = try? await NETunnelProviderManager.loadAllFromPreferences()
-        manager = managers?.first
-        updateStatus()
-    }
-
-    private func getOrCreateManager() async throws -> NETunnelProviderManager {
-        if let manager { return manager }
-        let m = NETunnelProviderManager()
-        self.manager = m
-        return m
-    }
-
-    private func tunnelBundleId() -> String {
-        #if os(iOS)
-        return "com.jeffujioka.vpslightsail.ios.tunnel"
-        #else
-        return "com.jeffujioka.vpslightsail.macos.tunnel"
-        #endif
-    }
-
-    @objc private func vpnStatusChanged() {
-        updateStatus()
-    }
-
-    private func updateStatus() {
-        guard let connection = manager?.connection else {
-            status = .disconnected
-            return
+    private func startStatusMonitor() {
+        statusTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.checkStatus()
+            }
         }
-        switch connection.status {
-        case .connected: status = .connected
-        case .connecting, .reasserting: status = .connecting
-        case .disconnecting: status = .disconnecting
-        case .disconnected, .invalid: status = .disconnected
-        @unknown default: status = .disconnected
+    }
+
+    private func stopStatusMonitor() {
+        statusTimer?.invalidate()
+        statusTimer = nil
+    }
+
+    private func checkStatus() {
+        do {
+            let output = try commandRunner.run("wg", arguments: ["show"])
+            status = output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? .disconnected
+                : .connected
+        } catch {
+            status = .disconnected
+            stopStatusMonitor()
         }
     }
 }
