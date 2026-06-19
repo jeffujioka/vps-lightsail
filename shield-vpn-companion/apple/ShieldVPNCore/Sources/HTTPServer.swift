@@ -16,7 +16,13 @@ public final class HTTPServer: @unchecked Sendable {
     public init(port: UInt16 = ShieldVPNCore.httpPort, token: String) {
         self.port = port
         self.token = token
-        self.listener = try! NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: port)!)
+        let params = NWParameters.tcp
+        params.includePeerToPeer = true
+        self.listener = try! NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
+        listener.service = NWListener.Service(
+            name: "vps-lightsail",
+            type: ShieldVPNCore.serviceType
+        )
     }
 
     public func start() {

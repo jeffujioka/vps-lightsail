@@ -13,7 +13,6 @@ struct VPSLightsailApp: App {
         MenuBarExtra("VPN", systemImage: menuBarIcon) {
             MenuBarView()
                 .environmentObject(coordinator)
-                .task { coordinator.start() }
         }
         .menuBarExtraStyle(.window)
 
