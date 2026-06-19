@@ -198,15 +198,19 @@ def cmd_status(args: argparse.Namespace) -> None:
     # Public IP info
     print("\n── Public IP ──")
     try:
-        resp = httpx.get("https://ipinfo.io/json", timeout=5.0)
-        if resp.status_code == 200:
-            info = resp.json()
+        import json as _json
+        result = subprocess.run(
+            ["curl", "-s", "--max-time", "5", "https://ipinfo.io/json"],
+            capture_output=True, text=True, timeout=6,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            info = _json.loads(result.stdout)
             print(f"  IP:      {info.get('ip', '?')}")
             print(f"  City:    {info.get('city', '?')}")
             print(f"  Country: {info.get('country', '?')}")
             print(f"  Org:     {info.get('org', '?')}")
         else:
-            print(f"  (ipinfo.io returned {resp.status_code})")
+            print("  (could not reach ipinfo.io)")
     except Exception as e:
         print(f"  (could not reach ipinfo.io: {e})")
 
