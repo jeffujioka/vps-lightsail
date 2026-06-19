@@ -17,6 +17,10 @@ public final class TunnelManager: ObservableObject {
         self.configDir = configDir
     }
 
+    public var wgQuickAvailable: Bool {
+        FileManager.default.fileExists(atPath: wgQuickPath)
+    }
+
     public func connect(config: TunnelConfig) async throws {
         guard FileManager.default.fileExists(atPath: wgQuickPath) else {
             throw TunnelError.wgQuickNotFound
