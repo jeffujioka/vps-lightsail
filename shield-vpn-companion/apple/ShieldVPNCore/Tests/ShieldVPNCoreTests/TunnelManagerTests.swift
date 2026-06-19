@@ -37,7 +37,8 @@ final class TunnelManagerTests: XCTestCase {
 
         XCTAssertEqual(manager.status, .connected)
         XCTAssertEqual(mock.privilegedCommands.count, 1)
-        XCTAssert(mock.privilegedCommands[0].contains("wg-quick up"))
+        XCTAssert(mock.privilegedCommands[0].contains(fakeWgQuickPath.path))
+        XCTAssert(mock.privilegedCommands[0].contains("up"))
         XCTAssert(mock.privilegedCommands[0].contains("wg-vpslightsail.conf"))
 
         let confPath = FileManager.default.temporaryDirectory
@@ -65,7 +66,8 @@ final class TunnelManagerTests: XCTestCase {
 
         XCTAssertEqual(manager.status, .disconnected)
         XCTAssertEqual(mock.privilegedCommands.count, 1)
-        XCTAssert(mock.privilegedCommands[0].contains("wg-quick down"))
+        XCTAssert(mock.privilegedCommands[0].contains(fakeWgQuickPath.path))
+        XCTAssert(mock.privilegedCommands[0].contains("down"))
     }
 
     @MainActor
