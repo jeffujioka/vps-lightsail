@@ -1,0 +1,89 @@
+name: VPSLightsail
+options:
+  bundleIdPrefix: com.jeffujioka.vpslightsail
+  deploymentTarget:
+    iOS: "16.0"
+    macOS: "13.0"
+  xcodeVersion: "15.0"
+
+packages:
+  WireGuardKit:
+    url: https://git.zx2c4.com/wireguard-apple
+    from: "1.0.15"
+  ShieldVPNCore:
+    path: ShieldVPNCore
+
+targets:
+  VPSLightsail-iOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: iOS
+    dependencies:
+      - package: WireGuardKit
+        product: WireGuardKit
+      - package: ShieldVPNCore
+        product: ShieldVPNCore
+      - target: TunnelExtension-iOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jeffujioka.vpslightsail.ios
+        INFOPLIST_FILE: iOS/Info.plist
+        CODE_SIGN_ENTITLEMENTS: iOS/VPSLightsail-iOS.entitlements
+        PRODUCT_NAME: "vps-lightsail iOS"
+
+  VPSLightsail-macOS:
+    type: application
+    platform: macOS
+    sources:
+      - path: macOS
+    dependencies:
+      - package: WireGuardKit
+        product: WireGuardKit
+      - package: ShieldVPNCore
+        product: ShieldVPNCore
+      - target: TunnelExtension-macOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jeffujioka.vpslightsail.macos
+        INFOPLIST_FILE: macOS/Info.plist
+        CODE_SIGN_ENTITLEMENTS: macOS/VPSLightsail-macOS.entitlements
+        PRODUCT_NAME: "vps-lightsail macOS"
+
+  TunnelExtension-iOS:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: TunnelExtension
+        excludes:
+          - "Info-macOS.plist"
+    dependencies:
+      - package: WireGuardKit
+        product: WireGuardKit
+      - package: ShieldVPNCore
+        product: ShieldVPNCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jeffujioka.vpslightsail.ios.tunnel
+        INFOPLIST_FILE: TunnelExtension/Info-iOS.plist
+        CODE_SIGN_ENTITLEMENTS: TunnelExtension/TunnelExtension-iOS.entitlements
+        PRODUCT_NAME: "TunnelExtension"
+
+  TunnelExtension-macOS:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: TunnelExtension
+        excludes:
+          - "Info-iOS.plist"
+    dependencies:
+      - package: WireGuardKit
+        product: WireGuardKit
+      - package: ShieldVPNCore
+        product: ShieldVPNCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jeffujioka.vpslightsail.macos.tunnel
+        INFOPLIST_FILE: TunnelExtension/Info-macOS.plist
+        CODE_SIGN_ENTITLEMENTS: TunnelExtension/TunnelExtension-macOS.entitlements
+        PRODUCT_NAME: "TunnelExtension"
