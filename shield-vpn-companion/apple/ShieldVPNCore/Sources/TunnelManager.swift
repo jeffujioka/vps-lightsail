@@ -27,7 +27,7 @@ public final class TunnelManager: ObservableObject {
 
         do {
             try config.toConfString().write(to: confPath, atomically: true, encoding: .utf8)
-            try commandRunner.runPrivileged("sudo wg-quick up \(confPath.path)")
+            try commandRunner.runPrivileged("\(wgQuickPath) up \(confPath.path)")
             status = .connected
             startStatusMonitor()
         } catch {
@@ -42,7 +42,7 @@ public final class TunnelManager: ObservableObject {
 
         status = .disconnecting
         do {
-            try commandRunner.runPrivileged("sudo wg-quick down \(confPath.path)")
+            try commandRunner.runPrivileged("\(wgQuickPath) down \(confPath.path)")
         } catch {}
         status = .disconnected
         stopStatusMonitor()
