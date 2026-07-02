@@ -165,6 +165,54 @@ final class TunnelManagerTests: XCTestCase {
     }
 
     @MainActor
+    func testCheckStatusDetectsConnectedViaSocketFile() async throws {
+        let config = TunnelConfig(
+            privateKey: "k=", address: "10.8.0.2/32", dns: "1.1.1.1",
+            peerPublicKey: "p=", endpoint: "1.2.3.4:51820", allowedIPs: "0.0.0.0/0"
+        )
+
+        // Create fake socket file to simulate active WireGuard tunnel
+        let socketDir = URL(fileURLWithPath: "/tmp/test-wireguard-run")
+        try FileManager.default.createDirectory(at: socketDir, withIntermediateDirectories: true)
+        let socketFile = socketDir.appendingPathComponent("wg-vpslightsail.name")
+        FileManager.default.createFile(atPath: socketFile.path, contents: nil)
+
+        // Use a manager configured to check our test socket directory
+        let testManager = TunnelManager(
+            commandRunner: mock,
+            wgQuickPath: fakeWgQuickPath.path,
+            configDir: FileManager.default.temporaryDirectory,
+            wireguardRunDir: socketDir.path
+        )
+        // Manually set to connected so startStatusMonitor is meaningful
+        try await testManager.connect(config: config)
+
+        testManager.forceCheckStatus()
+        XCTAssertEqual(testManager.status, .connected)
+
+        // Cleanup
+        try? FileManager.default.removeItem(at: socketDir)
+    }
+
+    @MainActor
+    func testCheckStatusDetectsDisconnectedWhenNoSocketFile() async throws {
+        let config = TunnelConfig(
+            privateKey: "k=", address: "10.8.0.2/32", dns: "1.1.1.1",
+            peerPublicKey: "p=", endpoint: "1.2.3.4:51820", allowedIPs: "0.0.0.0/0"
+        )
+        let manager = TunnelManager(
+            commandRunner: mock,
+            wgQuickPath: fakeWgQuickPath.path,
+            configDir: FileManager.default.temporaryDirectory,
+            wireguardRunDir: "/tmp/nonexistent-wg-run-dir"
+        )
+        try await manager.connect(config: config)
+
+        manager.forceCheckStatus()
+        XCTAssertEqual(manager.status, .disconnected)
+    }
+
+    @MainActor
     func testConnectWhileConnectedDisconnectsFirst() async throws {
         let config = TunnelConfig(
             privateKey: "k=", address: "10.8.0.2/32", dns: "1.1.1.1",
