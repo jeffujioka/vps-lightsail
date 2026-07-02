@@ -2,8 +2,8 @@ import Foundation
 import Network
 
 public protocol HTTPServerDelegate: AnyObject, Sendable {
-    func httpServer(_ server: HTTPServer, didReceiveConfig body: String) throws
-    func httpServerDidReceiveDisconnect(_ server: HTTPServer) throws
+    func httpServer(_ server: HTTPServer, didReceiveConfig body: String) -> Result<Void, Error>
+    func httpServerDidReceiveDisconnect(_ server: HTTPServer) -> Result<Void, Error>
 }
 
 public final class HTTPServer: @unchecked Sendable {
@@ -122,10 +122,14 @@ public final class HTTPServer: @unchecked Sendable {
         guard !request.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return .badRequest
         }
-        do {
-            try delegate?.httpServer(self, didReceiveConfig: request.body)
+        guard let delegate else {
+            return .internalError("No delegate configured")
+        }
+        let result = delegate.httpServer(self, didReceiveConfig: request.body)
+        switch result {
+        case .success:
             return HTTPResponse(status: 200, statusText: "OK", body: "OK \u{2014} tunnel activated")
-        } catch {
+        case .failure(let error):
             return .internalError(error.localizedDescription)
         }
     }
@@ -134,10 +138,14 @@ public final class HTTPServer: @unchecked Sendable {
         guard TokenManager.isAuthorized(header: request.headers["authorization"], expectedToken: token) else {
             return .forbidden
         }
-        do {
-            try delegate?.httpServerDidReceiveDisconnect(self)
+        guard let delegate else {
+            return .internalError("No delegate configured")
+        }
+        let result = delegate.httpServerDidReceiveDisconnect(self)
+        switch result {
+        case .success:
             return HTTPResponse(status: 200, statusText: "OK", body: "Disconnected")
-        } catch {
+        case .failure(let error):
             return .internalError(error.localizedDescription)
         }
     }

@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 import ShieldVPNCore
 
 @MainActor
@@ -29,16 +29,46 @@ final class AppCoordinator: ObservableObject, HTTPServerDelegate {
         httpServer?.stop()
     }
 
-    nonisolated func httpServer(_ server: HTTPServer, didReceiveConfig body: String) throws {
-        let config = try ConfigParser.parse(body)
-        Task { @MainActor in
-            try await tunnelManager.connect(config: config)
+    nonisolated func httpServer(_ server: HTTPServer, didReceiveConfig body: String) -> Result<Void, Error> {
+        dispatchPrecondition(condition: .notOnQueue(.main))
+        do {
+            let config = try ConfigParser.parse(body)
+            let semaphore = DispatchSemaphore(value: 0)
+            var connectError: Error?
+            Task { @MainActor in
+                do {
+                    try await self.tunnelManager.connect(config: config)
+                } catch {
+                    connectError = error
+                }
+                semaphore.signal()
+            }
+            semaphore.wait()
+            if let error = connectError {
+                return .failure(error)
+            }
+            return .success(())
+        } catch {
+            return .failure(error)
         }
     }
 
-    nonisolated func httpServerDidReceiveDisconnect(_ server: HTTPServer) throws {
+    nonisolated func httpServerDidReceiveDisconnect(_ server: HTTPServer) -> Result<Void, Error> {
+        dispatchPrecondition(condition: .notOnQueue(.main))
+        let semaphore = DispatchSemaphore(value: 0)
+        var disconnectError: Error?
         Task { @MainActor in
-            try await tunnelManager.disconnect()
+            do {
+                try await self.tunnelManager.disconnect()
+            } catch {
+                disconnectError = error
+            }
+            semaphore.signal()
         }
+        semaphore.wait()
+        if let error = disconnectError {
+            return .failure(error)
+        }
+        return .success(())
     }
 }
