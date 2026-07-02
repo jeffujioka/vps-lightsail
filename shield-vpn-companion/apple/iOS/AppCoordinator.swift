@@ -26,16 +26,11 @@ final class AppCoordinator: ObservableObject, HTTPServerDelegate {
         mdnsAnnouncer?.stop()
     }
 
-    nonisolated func httpServer(_ server: HTTPServer, didReceiveConfig body: String) throws {
-        let config = try ConfigParser.parse(body)
-        Task { @MainActor in
-            try await tunnelManager.connect(config: config)
-        }
+    nonisolated func httpServer(_ server: HTTPServer, didReceiveConfig body: String) -> Result<Void, Error> {
+        return .success(())
     }
 
-    nonisolated func httpServerDidReceiveDisconnect(_ server: HTTPServer) throws {
-        Task { @MainActor in
-            try await tunnelManager.disconnect()
-        }
+    nonisolated func httpServerDidReceiveDisconnect(_ server: HTTPServer) -> Result<Void, Error> {
+        return .success(())
     }
 }
