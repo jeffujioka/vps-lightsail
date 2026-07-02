@@ -26,6 +26,10 @@ public final class TunnelManager: ObservableObject {
             throw TunnelError.wgQuickNotFound
         }
 
+        if status == .connected {
+            try await disconnect()
+        }
+
         status = .connecting
         let confPath = configDir.appendingPathComponent(confName)
 

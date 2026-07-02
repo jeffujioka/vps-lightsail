@@ -163,4 +163,28 @@ final class TunnelManagerTests: XCTestCase {
 
         XCTAssertEqual(manager.status, .connected)
     }
+
+    @MainActor
+    func testConnectWhileConnectedDisconnectsFirst() async throws {
+        let config = TunnelConfig(
+            privateKey: "k=", address: "10.8.0.2/32", dns: "1.1.1.1",
+            peerPublicKey: "p=", endpoint: "1.2.3.4:51820", allowedIPs: "0.0.0.0/0"
+        )
+        let manager = TunnelManager(
+            commandRunner: mock,
+            wgQuickPath: fakeWgQuickPath.path,
+            configDir: FileManager.default.temporaryDirectory
+        )
+
+        try await manager.connect(config: config)
+        XCTAssertEqual(manager.status, .connected)
+        XCTAssertEqual(mock.privilegedCommands.count, 1)
+
+        try await manager.connect(config: config)
+        XCTAssertEqual(manager.status, .connected)
+        // Should have: down (disconnect) + up (reconnect) = 2 more commands
+        XCTAssertEqual(mock.privilegedCommands.count, 3)
+        XCTAssert(mock.privilegedCommands[1].contains("down"))
+        XCTAssert(mock.privilegedCommands[2].contains("up"))
+    }
 }
