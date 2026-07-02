@@ -12,6 +12,7 @@ public final class HTTPServer: @unchecked Sendable {
     private let port: UInt16
     private let token: String
     public weak var delegate: HTTPServerDelegate?
+    public private(set) var isReady = false
 
     public init(port: UInt16 = ShieldVPNCore.httpPort, token: String) {
         self.port = port
@@ -19,19 +20,31 @@ public final class HTTPServer: @unchecked Sendable {
         let params = NWParameters.tcp
         params.includePeerToPeer = true
         self.listener = try! NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
-        let entry = "token=\(token)"
-        var txtData = Data()
-        txtData.append(UInt8(entry.utf8.count))
-        txtData.append(contentsOf: entry.utf8)
         listener.service = NWListener.Service(
             name: "vps-lightsail",
             type: ShieldVPNCore.serviceType,
-            domain: nil,
-            txtRecord: txtData
+            domain: nil
         )
     }
 
     public func start() {
+        listener.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            switch state {
+            case .ready:
+                self.isReady = true
+                print("[HTTP] Listening on port \(self.port)")
+            case .failed(let error):
+                // NWListener cannot be restarted after cancel().
+                // User must relaunch the app to recover.
+                self.isReady = false
+                print("[HTTP] Listener failed: \(error). Relaunch app to retry.")
+            case .cancelled:
+                self.isReady = false
+            default:
+                break
+            }
+        }
         listener.newConnectionHandler = { [weak self] connection in
             self?.handleConnection(connection)
         }
