@@ -8,13 +8,20 @@ public final class TunnelManager: ObservableObject {
     private let commandRunner: CommandRunner
     private let wgQuickPath: String
     private let configDir: URL
+    private let wireguardRunDir: String
     private let confName = "wg-vpslightsail.conf"
     private var statusTimer: Timer?
 
-    public init(commandRunner: CommandRunner, wgQuickPath: String, configDir: URL) {
+    public init(
+        commandRunner: CommandRunner,
+        wgQuickPath: String,
+        configDir: URL,
+        wireguardRunDir: String = "/var/run/wireguard"
+    ) {
         self.commandRunner = commandRunner
         self.wgQuickPath = wgQuickPath
         self.configDir = configDir
+        self.wireguardRunDir = wireguardRunDir
     }
 
     public var wgQuickAvailable: Bool {
@@ -72,13 +79,16 @@ public final class TunnelManager: ObservableObject {
         statusTimer = nil
     }
 
+    public func forceCheckStatus() {
+        checkStatus()
+    }
+
     private func checkStatus() {
-        do {
-            let output = try commandRunner.run("wg", arguments: ["show"])
-            status = output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? .disconnected
-                : .connected
-        } catch {
+        let name = confName.replacingOccurrences(of: ".conf", with: "")
+        let socketPath = "\(wireguardRunDir)/\(name).name"
+        if FileManager.default.fileExists(atPath: socketPath) {
+            status = .connected
+        } else {
             status = .disconnected
             stopStatusMonitor()
         }
