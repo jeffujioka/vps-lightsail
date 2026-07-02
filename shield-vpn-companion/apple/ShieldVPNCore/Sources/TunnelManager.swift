@@ -47,9 +47,12 @@ public final class TunnelManager: ObservableObject {
         status = .disconnecting
         do {
             try commandRunner.runPrivileged("\(wgQuickPath) down \(confPath.path)")
-        } catch {}
-        status = .disconnected
-        stopStatusMonitor()
+            status = .disconnected
+            stopStatusMonitor()
+        } catch {
+            status = .connected
+            throw error
+        }
     }
 
     private func startStatusMonitor() {

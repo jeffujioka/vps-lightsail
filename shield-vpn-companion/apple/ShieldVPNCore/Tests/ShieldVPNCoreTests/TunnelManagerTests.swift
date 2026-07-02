@@ -115,4 +115,52 @@ final class TunnelManagerTests: XCTestCase {
 
         XCTAssertEqual(manager.status, .disconnected)
     }
+
+    @MainActor
+    func testDisconnectFailureRevertsToConnected() async throws {
+        let config = TunnelConfig(
+            privateKey: "k=", address: "10.8.0.2/32", dns: "1.1.1.1",
+            peerPublicKey: "p=", endpoint: "1.2.3.4:51820", allowedIPs: "0.0.0.0/0"
+        )
+        let manager = TunnelManager(
+            commandRunner: mock,
+            wgQuickPath: fakeWgQuickPath.path,
+            configDir: FileManager.default.temporaryDirectory
+        )
+        try await manager.connect(config: config)
+
+        mock.shouldThrow = TunnelError.executionFailed("exit code 1")
+
+        do {
+            try await manager.disconnect()
+            XCTFail("Expected error")
+        } catch {}
+
+        XCTAssertEqual(manager.status, .connected)
+    }
+
+    @MainActor
+    func testDisconnectUserCancelledRevertsToConnected() async throws {
+        let config = TunnelConfig(
+            privateKey: "k=", address: "10.8.0.2/32", dns: "1.1.1.1",
+            peerPublicKey: "p=", endpoint: "1.2.3.4:51820", allowedIPs: "0.0.0.0/0"
+        )
+        let manager = TunnelManager(
+            commandRunner: mock,
+            wgQuickPath: fakeWgQuickPath.path,
+            configDir: FileManager.default.temporaryDirectory
+        )
+        try await manager.connect(config: config)
+
+        mock.shouldThrow = TunnelError.userCancelled
+
+        do {
+            try await manager.disconnect()
+            XCTFail("Expected error")
+        } catch let error as TunnelError {
+            XCTAssertEqual(error, .userCancelled)
+        }
+
+        XCTAssertEqual(manager.status, .connected)
+    }
 }
