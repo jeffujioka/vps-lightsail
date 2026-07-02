@@ -14,7 +14,24 @@ final class AppCoordinator: ObservableObject, HTTPServerDelegate {
     let token = TokenManager.token
 
     init() {
+        // Capture values before closure to avoid @MainActor isolation violations.
+        let wgQuick = TunnelManager.findWgQuick() ?? "/opt/homebrew/bin/wg-quick"
+        let confPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("wg-vpslightsail.conf")
+
         start()
+
+        // Best-effort cleanup: if the user hasn't recently authenticated,
+        // the auth dialog may time out before the system kills the app.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            guard FileManager.default.fileExists(atPath: confPath.path) else { return }
+            let runner = SystemCommandRunner()
+            try? runner.runPrivileged("\(wgQuick) down \(confPath.path)")
+        }
     }
 
     func start() {
