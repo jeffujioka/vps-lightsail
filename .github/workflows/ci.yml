@@ -16,14 +16,14 @@ jobs:
 
       - name: Check shell scripts are executable
         run: |
-          for f in setup.sh teardown.sh swap-ip.sh fetch-config.sh provision.sh; do
+          for f in setup.sh teardown.sh swap-ip.sh fetch-config.sh provision.sh bootstrap.sh; do
             test -x "$f" && echo "✅ $f" || (echo "❌ $f not executable" && exit 1)
           done
 
       - name: Lint shell scripts (shellcheck)
         run: |
           sudo apt-get install -y shellcheck -qq
-          shellcheck setup.sh teardown.sh swap-ip.sh fetch-config.sh provision.sh
+          shellcheck setup.sh teardown.sh swap-ip.sh fetch-config.sh provision.sh bootstrap.sh
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
