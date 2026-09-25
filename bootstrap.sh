@@ -281,8 +281,12 @@ write_env_sh() {
     fi
     echo ""
     echo '# Local overrides (AWS profile, SHIELD_VPN_TOKEN_*, ...)'
-    echo '# shellcheck source=/dev/null'
-    echo "[ -f \"$REPO_DIR/env.local.sh\" ] && . \"$REPO_DIR/env.local.sh\""
+    echo "# An if-block, not '[ -f ... ] && ...', so sourcing this file always"
+    echo "# returns 0 even when env.local.sh is absent."
+    echo "if [ -f \"$REPO_DIR/env.local.sh\" ]; then"
+    echo '  # shellcheck source=/dev/null'
+    echo "  . \"$REPO_DIR/env.local.sh\""
+    echo "fi"
   } >"$env_file"
 
   ok "env.sh written — run 'source ./env.sh' before building"
