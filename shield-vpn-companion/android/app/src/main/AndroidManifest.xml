@@ -41,18 +41,24 @@
             </intent-filter>
         </activity>
 
-        <!-- WireGuard VPN service -->
+        <!-- Persistent foreground service: owns HTTP server, mDNS, and WireGuard tunnel -->
         <service
-            android:name=".vpn.WireGuardTunnel"
+            android:name=".VpnControlService"
             android:exported="false"
-            android:foregroundServiceType="specialUse"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="vpn" />
+        </service>
+
+        <!-- WireGuard GoBackend VPN service (managed by wireguard-android library) -->
+        <service
+            android:name="com.wireguard.android.backend.GoBackend$VpnService"
+            android:exported="false"
             android:permission="android.permission.BIND_VPN_SERVICE">
             <intent-filter>
                 <action android:name="android.net.VpnService" />
             </intent-filter>
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="vpn" />
         </service>
 
         <!-- Boot receiver to reconnect tunnel on device restart -->

@@ -5,7 +5,7 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.util.Log
 
-class MdnsAnnouncer(context: Context, private val port: Int) {
+class MdnsAnnouncer(context: Context, private val port: Int, private val token: String) {
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
     private var registrationListener: NsdManager.RegistrationListener? = null
 
@@ -14,6 +14,7 @@ class MdnsAnnouncer(context: Context, private val port: Int) {
             serviceName = "ShieldVPN"
             serviceType = "_vpnconfig._tcp"
             setPort(this@MdnsAnnouncer.port)
+            setAttribute("token", this@MdnsAnnouncer.token)
         }
 
         registrationListener = object : NsdManager.RegistrationListener {
