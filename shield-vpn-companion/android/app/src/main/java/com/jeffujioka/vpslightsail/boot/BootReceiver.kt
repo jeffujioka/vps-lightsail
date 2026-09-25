@@ -4,8 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.util.Log
-import com.jeffujioka.vpslightsail.persistence.ConfigStore
-import com.jeffujioka.vpslightsail.vpn.WireGuardTunnel
+import com.jeffujioka.vpslightsail.VpnControlService
 
 class BootReceiver : BroadcastReceiver() {
 
@@ -14,18 +13,8 @@ class BootReceiver : BroadcastReceiver() {
             intent.action != "android.intent.action.LOCKED_BOOT_COMPLETED"
         ) return
 
-        val store = ConfigStore(context)
-        val config = store.lastConfig
-
-        if (config != null && store.tunnelEnabled) {
-            Log.d(TAG, "Boot: restarting tunnel with saved config")
-            val tunnelIntent = Intent(context, WireGuardTunnel::class.java).apply {
-                putExtra(WireGuardTunnel.EXTRA_CONFIG, config)
-            }
-            context.startForegroundService(tunnelIntent)
-        } else {
-            Log.d(TAG, "Boot: no saved config or tunnel disabled, skipping")
-        }
+        Log.d(TAG, "Boot: starting VpnControlService")
+        context.startForegroundService(Intent(context, VpnControlService::class.java))
     }
 
     companion object {

@@ -18,47 +18,33 @@ class ConfigHttpServer(
     }
 
     private fun handleConfig(session: IHTTPSession): Response {
-        val authHeader = session.headers["authorization"]
-        if (!auth.isAuthorized(authHeader)) {
+        if (!auth.isAuthorized(session.headers["authorization"])) {
             return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "Unauthorized")
         }
-
         val body = readBody(session)
         if (body.isBlank()) {
             return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "Empty config")
         }
-
         return try {
             onConfigReceived(body)
             newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "OK — tunnel activated")
         } catch (e: Exception) {
-            newFixedLengthResponse(
-                Response.Status.INTERNAL_ERROR,
-                MIME_PLAINTEXT,
-                "Failed: ${e.message}"
-            )
+            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "Failed: ${e.message}")
         }
     }
 
-    private fun handleHealth(): Response {
-        return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "ok")
-    }
+    private fun handleHealth(): Response =
+        newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "ok")
 
     private fun handleDisconnect(session: IHTTPSession): Response {
-        val authHeader = session.headers["authorization"]
-        if (!auth.isAuthorized(authHeader)) {
+        if (!auth.isAuthorized(session.headers["authorization"])) {
             return newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "Unauthorized")
         }
-
         return try {
             onConfigReceived("")
             newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "Disconnected")
         } catch (e: Exception) {
-            newFixedLengthResponse(
-                Response.Status.INTERNAL_ERROR,
-                MIME_PLAINTEXT,
-                "Failed: ${e.message}"
-            )
+            newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "Failed: ${e.message}")
         }
     }
 

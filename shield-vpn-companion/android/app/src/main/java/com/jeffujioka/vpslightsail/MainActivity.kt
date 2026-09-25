@@ -1,15 +1,31 @@
 package com.jeffujioka.vpslightsail
 
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.VpnService
 import android.os.Bundle
+import android.view.View
+import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import com.jeffujioka.vpslightsail.persistence.ConfigStore
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var statusText: TextView
     private lateinit var tokenText: TextView
+    private lateinit var vpnToggleButton: Button
+    private lateinit var configStore: ConfigStore
+
+    private val stateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == VpnControlService.ACTION_STATE_CHANGED) {
+                refreshUI()
+            }
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -17,12 +33,10 @@ class MainActivity : AppCompatActivity() {
 
         statusText = findViewById(R.id.statusText)
         tokenText = findViewById(R.id.tokenText)
+        vpnToggleButton = findViewById(R.id.vpnToggleButton)
+        configStore = ConfigStore(this)
 
-        val configStore = (application as ShieldVpnApp).configStore
-
-        tokenText.text = configStore.authToken
-
-        updateStatus(configStore.tunnelEnabled)
+        vpnToggleButton.setOnClickListener { onToggleVpn() }
 
         val vpnIntent = VpnService.prepare(this)
         if (vpnIntent != null) {
@@ -32,23 +46,48 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
-        val configStore = (application as ShieldVpnApp).configStore
-        updateStatus(configStore.tunnelEnabled)
+        registerReceiver(
+            stateReceiver,
+            IntentFilter(VpnControlService.ACTION_STATE_CHANGED),
+            RECEIVER_NOT_EXPORTED
+        )
+        refreshUI()
     }
 
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == VPN_REQUEST_CODE && resultCode == RESULT_OK) {
-            val configStore = (application as ShieldVpnApp).configStore
-            updateStatus(configStore.tunnelEnabled)
+    override fun onPause() {
+        super.onPause()
+        unregisterReceiver(stateReceiver)
+    }
+
+    private fun onToggleVpn() {
+        if (configStore.tunnelEnabled) {
+            startService(Intent(this, VpnControlService::class.java).apply {
+                action = VpnControlService.ACTION_DISCONNECT
+            })
+        } else if (configStore.lastConfig != null) {
+            startService(Intent(this, VpnControlService::class.java).apply {
+                action = VpnControlService.ACTION_RECONNECT
+            })
         }
     }
 
-    private fun updateStatus(tunnelEnabled: Boolean) {
-        statusText.text = if (tunnelEnabled) {
-            "Status: Connected"
-        } else {
-            "Status: Waiting for config..."
+    private fun refreshUI() {
+        tokenText.text = configStore.authToken
+        val connected = configStore.tunnelEnabled
+        val hasConfig = configStore.lastConfig != null
+
+        statusText.text = if (connected) "Status: Connected" else "Status: Waiting for config..."
+
+        when {
+            connected -> {
+                vpnToggleButton.visibility = View.VISIBLE
+                vpnToggleButton.text = "Disconnect"
+            }
+            hasConfig -> {
+                vpnToggleButton.visibility = View.VISIBLE
+                vpnToggleButton.text = "Reconnect"
+            }
+            else -> vpnToggleButton.visibility = View.GONE
         }
     }
 
