@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .core.lightsail import Boto3Lightsail, LightsailClient
 from .core.peers import next_free_peer_ip, parse_allowed_ips  # noqa: F401  re-exported (spec-01 §11)
 
 
@@ -151,78 +152,51 @@ def teardown(region: str = DEFAULT_REGION, profile: str = DEFAULT_PROFILE) -> No
     print("✅ All resources destroyed. No more charges.")
 
 
-def status(region: str = DEFAULT_REGION, profile: str = DEFAULT_PROFILE) -> None:
-    """Show WireGuard status on the running server."""
-    key_path = Path.home() / ".ssh" / "vps-vpn.pem"
-    if not key_path.exists():
-        print("No VPN running (no SSH key found).")
-        return
-
-    try:
-        server_ip = aws([
-            "get-static-ip",
-            "--static-ip-name", STATIC_IP_NAME,
-            "--query", "staticIp.ipAddress",
-            "--output", "text",
-        ], profile, region)
-    except subprocess.CalledProcessError:
-        print("No VPN running (no static IP found).")
-        return
-
-    output = run([
-        "ssh", "-i", str(key_path), "-o", "StrictHostKeyChecking=no",
-        f"ubuntu@{server_ip}", "sudo wg show",
-    ])
-    print(output)
+def _instance_state(client: LightsailClient) -> str:
+    info = client.get_instance(INSTANCE_NAME)
+    if info is None:
+        raise RuntimeError(f"No instance {INSTANCE_NAME} in {client.region}")
+    return info.state
 
 
-def _instance_state(profile: str, region: str) -> str:
-    return aws([
-        "get-instance",
-        "--instance-name", INSTANCE_NAME,
-        "--query", "instance.state.name",
-        "--output", "text",
-    ], profile, region)
-
-
-def _wait_for_state(target: str, profile: str, region: str, timeout: int = 300) -> None:
+def _wait_for_state(client: LightsailClient, target: str, timeout: int = 300) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if _instance_state(profile, region) == target:
+        if _instance_state(client) == target:
             return
         time.sleep(5)
     raise TimeoutError(f"Instance did not reach '{target}' within {timeout}s")
 
 
-def _server_ip(profile: str, region: str) -> str:
-    return aws([
-        "get-static-ip",
-        "--static-ip-name", STATIC_IP_NAME,
-        "--query", "staticIp.ipAddress",
-        "--output", "text",
-    ], profile, region)
+def _server_ip(client: LightsailClient) -> str:
+    ip = client.get_static_ip(STATIC_IP_NAME)
+    if ip is None:
+        raise RuntimeError(f"No static IP {STATIC_IP_NAME} in {client.region}")
+    return ip
 
 
 def stop(region: str = DEFAULT_REGION, profile: str = DEFAULT_PROFILE) -> None:
     """Stop the instance, keeping disk, WireGuard keys and static IP. Still billed."""
-    if _instance_state(profile, region) == "stopped":
+    client = Boto3Lightsail(region, profile)
+    if _instance_state(client) == "stopped":
         print("▶ Instance already stopped.")
         return
     print("▶ Stopping instance...")
-    aws(["stop-instance", "--instance-name", INSTANCE_NAME], profile, region)
-    _wait_for_state("stopped", profile, region)
+    client.stop_instance(INSTANCE_NAME)
+    _wait_for_state(client, "stopped")
     print("✅ Instance stopped. No client can route traffic until `start`.")
 
 
 def start(region: str = DEFAULT_REGION, profile: str = DEFAULT_PROFILE) -> str:
     """Start a stopped instance and wait until WireGuard is up. Returns server IP."""
     key_path = Path.home() / ".ssh" / "vps-vpn.pem"
-    if _instance_state(profile, region) != "running":
+    client = Boto3Lightsail(region, profile)
+    if _instance_state(client) != "running":
         print("▶ Starting instance...")
-        aws(["start-instance", "--instance-name", INSTANCE_NAME], profile, region)
-        _wait_for_state("running", profile, region)
+        client.start_instance(INSTANCE_NAME)
+        _wait_for_state(client, "running")
 
-    server_ip = _server_ip(profile, region)
+    server_ip = _server_ip(client)
     print(f"▶ Waiting for SSH on {server_ip}...")
     _wait_for_ssh(server_ip, key_path)
 
