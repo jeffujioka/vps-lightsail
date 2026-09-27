@@ -51,3 +51,52 @@ chmod 600 /etc/wireguard/wg0.conf
 
 systemctl enable wg-quick@wg0
 systemctl start wg-quick@wg0
+
+# Network watchdog. On 2026-09-11 an unattended systemd upgrade re-exec'd
+# PID 1, systemd-networkd hit "Could not set route: Connection timed out",
+# and the box sat offline for two weeks with nothing noticing. Every 2 min:
+# after 2 failed checks reconfigure the NIC, after 5 (~10 min) reboot.
+# The counter lives in /run (tmpfs), so it resets on every boot.
+cat > /usr/local/sbin/net-watchdog << 'EOF'
+#!/bin/sh
+STATE=/run/net-watchdog.failures
+if ping -c 3 -W 3 1.1.1.1 >/dev/null 2>&1 || ping -c 3 -W 3 8.8.8.8 >/dev/null 2>&1; then
+  rm -f "$STATE"
+  exit 0
+fi
+n=$(( $(cat "$STATE" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$STATE"
+IFACE=$(ip -o link show | awk -F': ' '$2 ~ /^en/ {print $2; exit}')
+logger -t net-watchdog "connectivity check failed ($n/5) on $IFACE"
+if [ "$n" -ge 5 ]; then
+  logger -t net-watchdog "rebooting"
+  systemctl reboot
+elif [ "$n" -ge 2 ]; then
+  networkctl reconfigure "$IFACE" || systemctl restart systemd-networkd
+fi
+EOF
+chmod 755 /usr/local/sbin/net-watchdog
+
+cat > /etc/systemd/system/net-watchdog.service << 'EOF'
+[Unit]
+Description=Reconfigure or reboot when outbound connectivity is lost
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/net-watchdog
+EOF
+
+cat > /etc/systemd/system/net-watchdog.timer << 'EOF'
+[Unit]
+Description=Run net-watchdog every 2 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=2min
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now net-watchdog.timer
