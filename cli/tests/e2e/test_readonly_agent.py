@@ -134,3 +134,69 @@ def test_the_retained_region_is_polled_and_published(agent, fake_world, mqtt_wat
     doc = mqtt_watch.wait_for(STATE, lambda m: "updated_at" in m.json(), timeout=15.0).json()
     assert (doc["region"], doc["state"]) == ("eu-west-1", "nonexistent")      # the fake instance is in sa-east-1
     assert fake_world.calls("get_instance")[0]["region"] == "eu-west-1"
+
+# --- plan 02b Task 4: E8, E9 and the region scan (spec-02 §9.2, R13) ---------------------------
+import json  # noqa: E402
+from datetime import UTC, datetime, timedelta  # noqa: E402
+
+import pytest  # noqa: E402
+
+from vps_lightsail.core.ledger import hour_key, month_key  # noqa: E402
+
+LEDGER_PREFIX, METRICS_TOPIC, STATE_TOPIC = "vps_lightsail/ledger/", "vps_lightsail/metrics", "vps_lightsail/state"
+
+
+def ledger_hour(n: int) -> datetime:
+    """Start of the UTC hour n hours ago; skips during a month's first 7 h (deviation 9)."""
+    now = datetime.now(UTC)
+    if now - now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) < timedelta(hours=7):
+        pytest.skip("fewer than 7 h into the UTC month")
+    return now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=n)
+
+
+def seed_traffic(fake_world, traffic: dict[int, tuple[int, int]]) -> str:
+    """Instance created 7 h ago; (in, out) bytes per hours-ago. Returns this month's ledger topic."""
+    fake_world.set_instance(created_at=ledger_hour(7).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    fake_world.patch(network={m: {hour_key(ledger_hour(n)): v[i] for n, v in traffic.items()}
+                              for i, m in enumerate(("NetworkIn", "NetworkOut"))})
+    return LEDGER_PREFIX + month_key(datetime.now(UTC))
+
+
+def doc_where(watch, topic: str, pred, timeout: float = 20.0) -> dict:
+    return watch.wait_for(topic, lambda m: bool(m.payload) and pred(m.json()), timeout=timeout).json()
+
+
+def test_e8_the_ledger_survives_an_agent_restart(agent, fake_world, mqtt_watch):
+    topic = seed_traffic(fake_world, {1: (1000, 5000), 0: (2000, 6000)})
+    agent.start()
+    first = doc_where(mqtt_watch, topic, lambda d: len(d["hours"]) == 2 and bool(d["instances"]))
+    assert agent.sigterm(45) == 0
+    fake_world.clear_instance()                               # destroyed while the agent was down
+    mqtt_watch.clear()
+    agent.start()
+    after = doc_where(mqtt_watch, topic, lambda d: bool(d["instances"]) and d["instances"][0]["destroyed_at"])
+    assert after["hours"] == first["hours"]                   # the old buckets survived the restart
+    assert after["instances"][0]["destroyed_at"] == after["instances"][0]["last_seen_at"]
+    assert doc_where(mqtt_watch, METRICS_TOPIC, lambda d: d["cost_month_usd"] > 0)["month"] == first["month"]
+
+
+def test_e9_preseeded_ledger_buckets_survive_the_first_metrics_run(agent, fake_world, mqtt_watch):
+    topic = seed_traffic(fake_world, {6: (999, 999), 1: (10, 30)})
+    closed, recent = hour_key(ledger_hour(6)), hour_key(ledger_hour(1))
+    seed = {"month": topic.rsplit("/", 1)[1], "instances": [], "updated_at": "2026-01-01T00:00:00Z",
+            "hours": {closed: [100, 200], recent: [1, 2]}}
+    mqtt_watch.client.publish(topic, json.dumps(seed), qos=1, retain=True).wait_for_publish(5.0)
+    agent.start()
+    doc = doc_where(mqtt_watch, topic, lambda d: d["updated_at"] != seed["updated_at"])
+    assert doc["hours"][closed] == [100, 200]                 # retained wins a closed hour (L1 + merge)
+    assert doc["hours"][recent] == [10, 30]                   # the fetch wins the last 3 hours
+    assert all(m.json()["hours"].get(closed) == [100, 200] for m in mqtt_watch.all(topic) if m.payload)
+
+
+def test_region_scan_switches_to_the_region_holding_the_instance(agent, fake_world, mqtt_watch):
+    fake_world.patch(region="eu-west-1")                      # cfg.region stays sa-east-1
+    agent.start()
+    doc_where(mqtt_watch, STATE_TOPIC, lambda d: d["state"] == "nonexistent" and d["region"] == "sa-east-1")
+    moved = doc_where(mqtt_watch, STATE_TOPIC, lambda d: d["region"] == "eu-west-1")
+    assert (moved["aws_state"], moved["instance_name"]) == ("running", "personal-vps-vpn")
+    assert {"sa-east-1", "eu-west-1"} <= {c["region"] for c in fake_world.calls("get_instance")}

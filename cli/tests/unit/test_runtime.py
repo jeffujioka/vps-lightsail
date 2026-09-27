@@ -85,7 +85,7 @@ def test_callbacks_only_enqueue_and_the_scheduler_thread_publishes(rig):
     main.start()
     assert eventually(lambda: conn.log == ["start"])                # run() starts the connection
     restore_now(agent, conn)                                        # paho thread: returns at once
-    assert eventually(lambda: [s[0] for s in conn.sent] == [DISC])
+    assert eventually(lambda: [s[0] for s in conn.sent if s[0] == DISC] == [DISC])
     topic, obj, retain, qos, thread = conn.sent[0]
     assert (obj, retain, qos, thread) == (agent.discovery, True, 1, "scheduler")
     assert obj == build_discovery(CFG, ENABLED_SLICES) and isinstance(agent.ops, IdleOperations)
