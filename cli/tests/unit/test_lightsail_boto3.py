@@ -49,7 +49,11 @@ def test_session_uses_profile_region_and_the_hardened_config(monkeypatch):
     assert seen["session"] == {"profile_name": "personal", "region_name": "eu-west-1"}
     assert seen["service"] == "lightsail"
     assert (seen["config"].connect_timeout, seen["config"].read_timeout) == (5, 15)
-    assert seen["config"].retries == {"mode": "standard", "max_attempts": 3}
+    # botocore rewrites max_attempts → total_max_attempts on any Config handed to client(); the
+    # assertion must not observe the shared BOTO_CONFIG after another test built a client.
+    retries = dict(seen["config"].retries)
+    retries.pop("total_max_attempts", None)
+    assert retries == {"mode": "standard", "max_attempts": 3}
 
 
 def test_get_instance_maps_fields_not_found_is_none_other_errors_propagate(stubbed):
