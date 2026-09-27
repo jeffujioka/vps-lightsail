@@ -1,20 +1,22 @@
 """Agent runtime (spec-02 §1): paho callbacks only enqueue; one scheduler thread runs every job."""
 from __future__ import annotations
 
+import json
 import logging
 import queue
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from paho.mqtt.client import topic_matches_sub
 
 from vps_lightsail.agent.clients import Clients
-from vps_lightsail.agent.contract import build_discovery
+from vps_lightsail.agent.contract import build_discovery, removal_entries
 from vps_lightsail.agent.mqtt import MqttConnection
+from vps_lightsail.agent.retained import RetainedReader
 from vps_lightsail.agent.scheduler import Scheduler
-from vps_lightsail.agent.snapshot import IdleOperations, OperationView
+from vps_lightsail.agent.snapshot import AgentSnapshot, IdleOperations, OperationView, region_from_state
 from vps_lightsail.core.clock import SYSTEM_CLOCK, Clock
 from vps_lightsail.core.config import AgentConfig
 
@@ -24,6 +26,7 @@ ENABLED_SLICES: frozenset[str] = frozenset({"02"})   # index R12: 05a {"02","05"
 HEARTBEAT = Path("/tmp/vps-lightsail/heartbeat")     # index §5.7: touched after every job
 IDLE_TICK_S = 0.25                                   # spec-02 §1.1: drain at least once per second
 STATE_JOB = "state"                                  # the job request_refresh() runs at once
+RESTORE_WINDOW_S = 5.0                               # spec-01 §6.1 / M4 read-back window
 
 
 @dataclass(frozen=True)
@@ -42,6 +45,17 @@ def touch_heartbeat() -> None:
         log.warning("heartbeat %s not touched: %s", HEARTBEAT, e)
 
 
+def _json_or_none(payload: bytes | None) -> dict | None:
+    if payload is None:
+        return None
+    try:
+        doc = json.loads(payload)
+    except ValueError:
+        log.warning("ignoring a malformed retained payload (%d bytes)", len(payload))
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
 class Agent:
     def __init__(self, cfg: AgentConfig, clients: Clients, conn: MqttConnection, *,
                  clock: Clock = SYSTEM_CLOCK, ops: OperationView = IdleOperations()) -> None:
@@ -49,6 +63,8 @@ class Agent:
         self.topics = conn.topics
         self.discovery = build_discovery(cfg, ENABLED_SLICES)
         self.scheduler = Scheduler()
+        self.snapshot = AgentSnapshot(region=cfg.region)
+        self._reader = RetainedReader((), RESTORE_WINDOW_S)          # opened by the first connect
         self._events: queue.SimpleQueue[tuple] = queue.SimpleQueue()
         self._routes: list[Route] = []
         self._hooks: list[Callable[[], None]] = []
@@ -94,8 +110,44 @@ class Agent:
         self.conn.publish_json(self.topics.discovery, self.discovery)
         log.info("published discovery %s (%d components)", self.topics.discovery, len(self.discovery["cmps"]))
 
+    def publish_guarded(self, topic: str, obj: object) -> bool:
+        """L1 (spec-02 §1.4): BASE/state, BASE/peers, BASE/ledger/* never go out before the restore."""
+        if not self.snapshot.restored:
+            log.error("refused to publish %s before the boot restore (L1)", topic)
+            return False
+        self.conn.publish_json(topic, obj)
+        return True
+
+    def _restore_topics(self) -> list[str]:
+        """Read back during the boot window (spec-02 §1.4, M4); 02b adds BASE/ledger/<month>."""
+        return [self.topics.state, self.topics.discovery]
+
+    def _on_restored(self, retained: Mapping[str, bytes]) -> None:
+        """Scheduler thread, window closed, before any job is due (02b restores its ledger here)."""
+        state = _json_or_none(retained.get(self.topics.state))
+        with self.snapshot.lock:
+            self.snapshot.last_state = state
+            self.snapshot.region = region_from_state(state, self.cfg)
+        old = _json_or_none(retained.get(self.topics.discovery))
+        old_cmps = old.get("cmps") if old is not None else None
+        removed = removal_entries(old_cmps, self.discovery["cmps"]) if isinstance(old_cmps, dict) else {}
+        if removed:                                   # M4: HA's removal form once, then the clean copy
+            self.conn.publish_json(self.topics.discovery,
+                                   {**self.discovery, "cmps": {**self.discovery["cmps"], **removed}})
+            log.info("published discovery removal for %s", ", ".join(sorted(removed)))
+        self.publish_discovery()                      # spec-02 §4 (a)
+
+    def _finish_restore(self) -> None:
+        retained = self._reader.values()
+        for topic in self._reader.topics:
+            self.conn.unsubscribe(topic)
+        log.info("restore window closed: %d retained message(s)", len(retained))
+        self._on_restored(retained)
+        with self.snapshot.lock:
+            self.snapshot.restored = True
+        self.scheduler.start(self.clock.monotonic())  # spec-02 §1.4 step 6: first state job now
+
     def _loop(self, stop_event: threading.Event) -> None:
-        self.scheduler.start(self.clock.monotonic())     # 02a2 moves this to the end of the restore
         event: tuple | None = None
         while not stop_event.is_set():
             self._drain(event)
@@ -122,14 +174,40 @@ class Agent:
 
     def _handle(self, batch: list[tuple]) -> None:
         """One drained batch; duplicates collapse (index §5.4 refresh, spec-02 §4 birth storm)."""
-        kinds = {event[0] for event in batch}
-        if "connected" in kinds:
-            self.run_job("discovery", self.publish_discovery)    # 02a2: spec-02 §4 timing instead
-        if "refresh" in kinds:
+        now, publish = self.clock.monotonic(), False
+        for event in batch:
+            if event[0] == "connected":
+                if self.snapshot.restored:
+                    publish = True                                    # spec-02 §4 (b)
+                else:
+                    self._reader = RetainedReader(self._restore_topics(), RESTORE_WINDOW_S)
+                    self._reader.start(now)                           # a reconnect restarts it (L1)
+            elif event[0] == "message":
+                _, topic, payload, retain = event
+                if topic == self.topics.ha_status:
+                    if payload == b"online":
+                        log.info("HA birth: online")
+                        publish = publish or self.snapshot.restored   # (c); before it, (a) covers HA
+                    else:
+                        log.info("HA status %s (ignored)", payload.decode(errors="replace"))
+                elif self.snapshot.restored:
+                    log.debug("late echo on %s ignored", topic)       # spec-02 §1.4
+                else:
+                    self._reader.offer(topic, payload, retain)
+        if publish:
+            self.run_job("discovery", self.publish_discovery)
+        if any(event[0] == "refresh" for event in batch):
             self.scheduler.trigger(STATE_JOB, self.clock.monotonic())
+        if not self.snapshot.restored and self._reader.done(self.clock.monotonic()):
+            self.run_job("restore", self._finish_restore)
 
     def _on_connected(self) -> None:
+        """paho thread: subscriptions only, then one event (spec-02 §1.4 step 4)."""
         with self._acks_lock:
+            self.conn.subscribe(self.topics.ha_status, 1)
+            if not self.snapshot.restored:
+                for topic in self._restore_topics():
+                    self.conn.subscribe(topic, 1)
             for route in self._routes:
                 mid = self.conn.subscribe(route.topic_filter, route.qos)
                 if route.on_subscribed is not None:
@@ -143,6 +221,8 @@ class Agent:
             fn()
 
     def _on_message(self, topic: str, payload: bytes, retain: bool) -> None:
+        if topic == self.topics.ha_status or topic in self._restore_topics():   # queued behind "connected"
+            self._events.put(("message", topic, payload, retain))
         for route in list(self._routes):
             if topic_matches_sub(route.topic_filter, topic):
                 try:

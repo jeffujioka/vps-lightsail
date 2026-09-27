@@ -59,7 +59,7 @@ def test_config_errors_exit_2_and_list_every_problem(agent):
 def test_retained_discovery_is_the_slice_02_golden(agent, mqtt_watch):          # plan 01b3, index R12
     agent.start()
     mqtt_watch.wait_for(AVAIL, online, timeout=5.0)
-    mqtt_watch.wait_for(DISCOVERY, timeout=5.0)                               # published right after online …
+    mqtt_watch.wait_for(DISCOVERY, timeout=15.0)                              # after the 5 s restore window (02a2) …
     mqtt_watch.resubscribe()                                                  # … and retained
     got = mqtt_watch.wait_for(DISCOVERY, retained=True, timeout=5.0).json()
     assert normalise_sw(got) == load_golden("discovery_02.json") and len(got["cmps"]) == 13
