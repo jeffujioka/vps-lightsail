@@ -129,3 +129,68 @@ def merge_backfill(retained: dict[str, list[int]], fetched: dict[str, list[int]]
         if k >= cutoff or k not in merged:
             merged[k] = list(v)
     return merged
+
+
+# --- plan 01b2 Task 3: the cost estimate (spec-01 §6.2) --------------------------------------
+HOURS_PER_PRICE_MONTH = 730      # Lightsail's hourly rate = monthly price / 730
+BYTES_PER_GB = 1e9
+PROJECTION_MIN_ELAPSED_H = 24    # no traffic extrapolation during a month's first day
+
+
+@dataclass(frozen=True)
+class CostEstimate:
+    data_in_gb: float
+    data_out_gb: float
+    data_total_gb: float
+    allowance_gb: int | None
+    allowance_pct: float | None
+    instance_hours_month: float
+    hourly_usd: float | None
+    cost_month_usd: float
+    cost_projected_usd: float
+    overage_usd: float | None
+
+
+def current_instance(ledger: Ledger) -> LedgerInstance | None:
+    """The live instance, else the one seen last: its bundle gives the allowance and the hourly rate."""
+    return max(ledger.instances, key=lambda i: (i.destroyed_at is None, i.last_seen_at), default=None)
+
+
+def _hours(inst: LedgerInstance, m0: datetime, now: datetime) -> float:
+    return max(0.0, (min(now, inst.destroyed_at or now) - max(m0, inst.created_at)).total_seconds() / 3600)
+
+
+def _base(hours: float, inst: LedgerInstance) -> float:
+    return min(hours * inst.price_usd_month / HOURS_PER_PRICE_MONTH, inst.price_usd_month)   # monthly cap
+
+
+def _charged_gb(out_gb: float, total_gb: float, allowance_gb: int | None) -> float:
+    """Both directions fill the allowance; only outbound traffic beyond it is billed."""
+    return 0.0 if allowance_gb is None else max(0.0, min(out_gb, total_gb - allowance_gb))
+
+
+def estimate(ledger: Ledger, now: datetime, overage_rate: float | None) -> CostEstimate:
+    """spec-01 §6.2, unrounded (the metrics payload rounds). `now` is clamped to the ledger's month.
+    overage_rate None (unknown region): overage_usd None, and no overage enters the costs."""
+    m0, m1 = month_bounds(ledger.month)
+    now = min(max(now, m0), m1)
+    in_gb = sum(v[0] for v in ledger.hours.values()) / BYTES_PER_GB
+    out_gb = sum(v[1] for v in ledger.hours.values()) / BYTES_PER_GB
+    total_gb = in_gb + out_gb
+    cur = current_instance(ledger)
+    allowance = cur.transfer_gb_month if cur else None
+    hours = [_hours(i, m0, now) for i in ledger.instances]
+    elapsed_h, rest_h = (now - m0).total_seconds() / 3600, (m1 - now).total_seconds() / 3600
+    scale = (elapsed_h + rest_h) / elapsed_h if elapsed_h >= PROJECTION_MIN_ELAPSED_H else 1.0
+    rate = 0.0 if overage_rate is None else overage_rate
+    overage = _charged_gb(out_gb, total_gb, allowance) * rate
+    return CostEstimate(
+        data_in_gb=in_gb, data_out_gb=out_gb, data_total_gb=total_gb, allowance_gb=allowance,
+        allowance_pct=100 * total_gb / allowance if allowance else None,
+        instance_hours_month=sum(hours),
+        hourly_usd=cur.price_usd_month / HOURS_PER_PRICE_MONTH if cur else None,
+        cost_month_usd=sum(_base(h, i) for h, i in zip(hours, ledger.instances)) + overage,
+        cost_projected_usd=sum(_base(h + (rest_h if i.destroyed_at is None else 0.0), i)
+                               for h, i in zip(hours, ledger.instances))
+        + _charged_gb(out_gb * scale, total_gb * scale, allowance) * rate,
+        overage_usd=None if overage_rate is None else overage)
