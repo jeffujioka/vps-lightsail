@@ -16,10 +16,8 @@ import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from botocore.exceptions import ClientError
-
 from vps_lightsail import __version__
-from vps_lightsail.agent.clients import Clients, build_clients
+from vps_lightsail.agent.clients import build_clients
 from vps_lightsail.agent.mqtt import MqttConnection
 from vps_lightsail.agent.runtime import Agent
 from vps_lightsail.core.config import AgentConfig, ConfigError, load_config
@@ -105,22 +103,6 @@ def run_once(conn: MqttConnection, connected: threading.Event) -> int:
     return EXIT_OK if ok else EXIT_FAILED
 
 
-def _boot_observation(clients: Clients, cfg: AgentConfig) -> None:
-    """Plan 01c2: one read at boot, so the log names the world the agent talks to (AWS or
-    --fake DIR). Daemon thread; never raises. 02a's state job supersedes it (02a may delete it)."""
-    log = logging.getLogger("vps_lightsail.agent")
-    try:
-        info = clients.factory(cfg.region).get_instance(cfg.instance_name)
-    except Exception as e:                        # a boot read must never take the agent down
-        code = e.response.get("Error", {}).get("Code") if isinstance(e, ClientError) else type(e).__name__
-        log.warning("boot observation failed: %s", code)
-        return
-    if info is None:
-        log.info("boot observation: no instance %s in %s", cfg.instance_name, cfg.region)
-    else:
-        log.info("boot observation: %s is %s in %s", info.name, info.state, info.region)
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -143,7 +125,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_once(conn, stop)
     install_stop_signals(stop)
     agent = Agent(cfg, clients, conn)
-    threading.Thread(target=_boot_observation, args=(clients, cfg), name="boot-observation", daemon=True).start()
     agent.run(stop)                              # starts the connection; returns after "offline"
     return EXIT_OK
 

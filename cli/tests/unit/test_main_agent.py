@@ -32,3 +32,4 @@ def test_main_source_keeps_the_statement_05a2_replaces():
     assert src.count("agent = Agent(cfg, clients, conn)") == 1
     assert src.index("agent = Agent(cfg, clients, conn)") < src.index("agent.run(")
     assert not hasattr(agent_main, "SKELETON_SLICES") and not hasattr(agent_main, "run_forever")
+    assert not hasattr(agent_main, "_boot_observation")

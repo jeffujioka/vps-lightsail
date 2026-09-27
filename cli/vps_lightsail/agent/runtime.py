@@ -17,8 +17,10 @@ from vps_lightsail.agent.mqtt import MqttConnection
 from vps_lightsail.agent.retained import RetainedReader
 from vps_lightsail.agent.scheduler import Scheduler
 from vps_lightsail.agent.snapshot import AgentSnapshot, IdleOperations, OperationView, region_from_state
+from vps_lightsail.agent.state_job import StateJob
 from vps_lightsail.core.clock import SYSTEM_CLOCK, Clock
 from vps_lightsail.core.config import AgentConfig
+from vps_lightsail.core.lightsail import InstanceInfo
 
 log = logging.getLogger("vps_lightsail.agent.runtime")
 
@@ -65,6 +67,8 @@ class Agent:
         self.scheduler = Scheduler()
         self.snapshot = AgentSnapshot(region=cfg.region)
         self._reader = RetainedReader((), RESTORE_WINDOW_S)          # opened by the first connect
+        self.state_job = StateJob(cfg, clients, self.snapshot, ops, clock, self.publish_guarded, self.topics)
+        self.scheduler.add(STATE_JOB, cfg.poll.state_seconds, lambda: self._run_state_job())
         self._events: queue.SimpleQueue[tuple] = queue.SimpleQueue()
         self._routes: list[Route] = []
         self._hooks: list[Callable[[], None]] = []
@@ -117,6 +121,14 @@ class Agent:
             return False
         self.conn.publish_json(topic, obj)
         return True
+
+    def _run_state_job(self) -> None:
+        ok, info = self.state_job.run()
+        self._after_state_poll(ok, info)
+
+    def _after_state_poll(self, ok: bool, info: InstanceInfo | None) -> None:
+        """Scheduler thread, after every state run (plan 02b: MetricsJob.state_polled / state_poll_failed)."""
+        log.debug("state poll ok=%s, instance %s", ok, "found" if info is not None else "absent")
 
     def _restore_topics(self) -> list[str]:
         """Read back during the boot window (spec-02 §1.4, M4); 02b adds BASE/ledger/<month>."""

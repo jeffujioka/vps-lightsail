@@ -81,6 +81,7 @@ def restore_now(agent, conn):
 
 def test_callbacks_only_enqueue_and_the_scheduler_thread_publishes(rig):
     agent, conn, stop, main = rig
+    agent._run_state_job = lambda: None                             # 02a3: keep the real job out
     main.start()
     assert eventually(lambda: conn.log == ["start"])                # run() starts the connection
     restore_now(agent, conn)                                        # paho thread: returns at once
@@ -114,7 +115,7 @@ def test_routes_are_subscribed_on_every_connect_and_on_subscribed_follows_their_
 def test_queued_refreshes_coalesce_into_one_immediate_state_run(rig):
     agent, conn, _, main = rig
     runs, gate = [], threading.Event()
-    agent.scheduler.add(runtime.STATE_JOB, 3600, gated_job(runs, gate))
+    agent._run_state_job = gated_job(runs, gate)
     main.start()
     restore_now(agent, conn)
     assert eventually(lambda: len(runs) == 1)                       # due at start, now blocked
@@ -129,7 +130,7 @@ def test_queued_refreshes_coalesce_into_one_immediate_state_run(rig):
 def test_shutdown_waits_for_the_job_then_hooks_then_offline(rig, caplog):
     agent, conn, stop, main = rig
     runs, gate = [], threading.Event()
-    agent.scheduler.add(runtime.STATE_JOB, 3600, gated_job(runs, gate))
+    agent._run_state_job = gated_job(runs, gate)
     agent.add_shutdown_hook(lambda: conn.log.append("hook"))
     caplog.set_level("INFO")
     main.start()
@@ -148,7 +149,7 @@ def test_a_failing_job_is_logged_and_still_touches_the_heartbeat(rig, caplog):
     agent, conn, _, main = rig
     runs, gate = [], threading.Event()
     gate.set()
-    agent.scheduler.add(runtime.STATE_JOB, 3600, gated_job(runs, gate, fail=True))
+    agent._run_state_job = gated_job(runs, gate, fail=True)
     main.start()
     restore_now(agent, conn)
     assert eventually(lambda: runtime.HEARTBEAT.exists() and len(runs) == 1)

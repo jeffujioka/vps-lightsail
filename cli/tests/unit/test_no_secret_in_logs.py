@@ -10,6 +10,7 @@ import pytest
 
 from tests.unit.fake_paho import ACCEPTED, LOST, REFUSED, fake_paho, fire_message
 from vps_lightsail.agent import __main__ as agent_main
+from vps_lightsail.agent.clients import Clients
 from vps_lightsail.agent.mqtt import MqttConnection
 from vps_lightsail.core.config import MqttConfig
 
@@ -32,10 +33,10 @@ def leaks(*texts: str) -> list[str]:
 
 
 def test_main_config_errors_and_every_callback_path(tmp_path, monkeypatch, caplog, capsys):
-    # hermetic boot: _boot_observation must not reach the network from a unit test (a real boto3
+    # hermetic boot: build_clients is stubbed so a unit test never reaches the network (a real boto3
     # GetInstance is also a flake source: botocore's DEBUG log carries the request credential)
     booted = []
-    monkeypatch.setattr(agent_main, "build_clients", lambda cfg, fake: booted.append(True) or agent_main.Clients(
+    monkeypatch.setattr(agent_main, "build_clients", lambda cfg, fake: booted.append(True) or Clients(
         factory=lambda _region: type("StubLightsail", (), {"get_instance": lambda self, name: None})(),
         probe_factory=lambda _region: None))
     factory, client = fake_paho(REFUSED, ACCEPTED)                       # refused once, then accepted
