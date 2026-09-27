@@ -1,0 +1,6 @@
+*
+!cli/pyproject.toml
+!cli/uv.lock
+!cli/vps_lightsail/
+**/__pycache__
+**/*.pyc
