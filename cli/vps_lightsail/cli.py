@@ -4,14 +4,22 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import httpx
+from botocore.exceptions import BotoCoreError, ClientError
 
 from .discovery import Device, DeviceDiscovery
 from .push import check_health, disconnect_device, push_config, push_config_from_file
 from . import infra
+from .core.config import default_config
+from .core.lightsail import Boto3Lightsail, InstanceInfo, LightsailClient
+from .core.peers import is_connected, peer_ip
+from .core.server import ProbeResult, ServerProbe, SshServer
 
 REGIONS = {
     "sa-east-1": "São Paulo, Brazil",
@@ -229,28 +237,20 @@ def cmd_start(args: argparse.Namespace) -> None:
 
 
 def cmd_status(args: argparse.Namespace) -> None:
-    """Show VPN status: local tunnel, public IP, and server peers."""
-    import shutil
-    import subprocess
-
+    """Show VPN status: the local tunnel to this VPS, public IP, and the server's peers."""
     profile = getattr(args, "profile", os.environ.get("AWS_PROFILE", "personal"))
+    inst, probe, aws_error, server_ip = None, None, None, None
+    try:
+        client, probe = _status_clients(args.region, profile)
+        inst = client.get_instance(infra.INSTANCE_NAME)
+        if inst is not None:
+            server_ip = client.get_static_ip(infra.STATIC_IP_NAME) or inst.public_ip
+    except (ClientError, BotoCoreError) as e:
+        aws_error = _aws_code(e)
 
-    # Local WireGuard status
     print("── Local Tunnel ──")
-    wg_bin = shutil.which("wg")
-    if wg_bin:
-        try:
-            local_wg = subprocess.run(
-                ["sudo", wg_bin, "show"], capture_output=True, text=True, timeout=5,
-            )
-            if local_wg.returncode == 0 and local_wg.stdout.strip():
-                print(local_wg.stdout.strip())
-            else:
-                print("  Not connected")
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            print("  Not connected")
-    else:
-        print("  wg not installed (brew install wireguard-tools)")
+    for line in _local_tunnel_lines(server_ip):
+        print(line)
 
     # Public IP info
     print("\n── Public IP ──")
@@ -271,24 +271,71 @@ def cmd_status(args: argparse.Namespace) -> None:
     except Exception as e:
         print(f"  (could not reach ipinfo.io: {e})")
 
-    # Server-side peers (if VPN infra is running)
-    key_path = Path.home() / ".ssh" / "vps-vpn.pem"
-    if key_path.exists():
-        print("\n── Server Peers ──")
-        try:
-            server_ip = infra.aws([
-                "get-static-ip",
-                "--static-ip-name", infra.STATIC_IP_NAME,
-                "--query", "staticIp.ipAddress",
-                "--output", "text",
-            ], profile, args.region)
-            output = infra.run([
-                "ssh", "-i", str(key_path), "-o", "StrictHostKeyChecking=no",
-                f"ubuntu@{server_ip}", "sudo wg show",
-            ])
-            print(output)
-        except Exception:
-            print("  (could not reach server)")
+    print("\n── Server Peers ──")
+    for line in _server_lines(inst, probe, aws_error, args.region):
+        print(line)
+
+
+def _status_clients(region: str, profile: str) -> tuple[LightsailClient, ServerProbe]:
+    """AWS through the core client; SSH stateless (D8): no ~/.ssh/vps-vpn.pem needed."""
+    client = Boto3Lightsail(region, profile)
+    return client, SshServer(client)
+
+
+def _aws_code(e: Exception) -> str:
+    return str(e.response.get("Error", {}).get("Code")) if isinstance(e, ClientError) else type(e).__name__
+
+
+def _local_tunnel_lines(server_ip: str | None) -> list[str]:
+    """Only local WireGuard interfaces whose peer endpoint is this VPS. Old bug #5: a bare
+    `wg show` on jeff listed its unrelated wg0 and nordlynx as if they were ours."""
+    wg_bin = shutil.which("wg")
+    if not wg_bin:
+        return ["  wg not installed (brew install wireguard-tools)"]
+    if server_ip is None:
+        return ["  Not connected (no VPN server found)"]
+    try:
+        eps = subprocess.run(["sudo", wg_bin, "show", "all", "endpoints"], capture_output=True, text=True, timeout=5)
+        ours = sorted({f[0] for f in (line.split("\t") for line in eps.stdout.splitlines())
+                       if len(f) == 3 and f[2].rpartition(":")[0] == server_ip})
+        if eps.returncode != 0 or not ours:
+            return ["  Not connected"]
+        return [subprocess.run(["sudo", wg_bin, "show", iface], capture_output=True, text=True,
+                               timeout=5).stdout.strip() for iface in ours]
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return ["  Not connected"]
+
+
+def _server_lines(inst: InstanceInfo | None, probe: ServerProbe | None, aws_error: str | None,
+                  region: str) -> list[str]:
+    if aws_error:
+        return [f"  (could not reach AWS: {aws_error})"]
+    if inst is None:
+        return [f"  No VPN running (no instance {infra.INSTANCE_NAME} in {region})."]
+    if inst.state != "running":
+        return [f"  Instance is {inst.state} ({region}); no peers to show."]
+    try:
+        return _peer_lines(probe.probe(infra.INSTANCE_NAME), int(time.time()))
+    except (ClientError, BotoCoreError) as e:
+        return [f"  (could not reach server: {_aws_code(e)})"]
+
+
+def _peer_lines(result: ProbeResult, now: int) -> list[str]:
+    """One stateless probe (spec-01 §4) + the §4.1 handshake rule; names by position (§8.2)."""
+    if not result.ssh_ok:
+        return [f"  (could not reach server: {result.error or 'ssh failed'})"]
+    names = {peer_ip(i): spec.name for i, spec in enumerate(default_config().peers)}
+    lines = [f"  wg-quick@wg0: {'active' if result.wg_active else 'NOT active'}"]
+    for p in result.peers:
+        ip = p.allowed_ips.split("/")[0]
+        name = names.get(ip) or ("unknown" if ip == "(none)" else f"unknown-{ip.rsplit('.', 1)[-1]}")
+        seen = "never" if p.latest_handshake == 0 else f"{now - p.latest_handshake}s ago"
+        state = "connected" if is_connected(p, now) else "idle"
+        lines.append(f"  {name:<10} {p.allowed_ips:<14} {state:<9}  handshake {seen}, "
+                     f"rx {p.rx_bytes} B, tx {p.tx_bytes} B")
+    lines += ["  (no peers)"] if not result.peers else []
+    return lines + [f"  ⚠️  {ip} is claimed by more than one [Peer] in wg0.conf"
+                    for ip in sorted(result.wg_conf_duplicates)]
 
 
 def cmd_push(args: argparse.Namespace) -> None:
