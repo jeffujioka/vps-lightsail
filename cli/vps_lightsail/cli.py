@@ -41,6 +41,8 @@ EXAMPLES:
   vps-lightsail push                         # scan + interactive device selection + push
   vps-lightsail push --device 192.168.1.50   # push to specific device (skip scan)
   vps-lightsail status                       # show WireGuard peers
+  vps-lightsail stop                         # disconnect devices + stop server (keeps config)
+  vps-lightsail start                        # start server again, same IP and keys
   vps-lightsail teardown                     # destroy everything
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -56,6 +58,17 @@ EXAMPLES:
     teardown_p = sub.add_parser("teardown", help="Destroy all resources (stops billing)")
     teardown_p.add_argument("--region", default=os.environ.get("AWS_REGION", "sa-east-1"))
     teardown_p.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "personal"))
+
+    stop_p = sub.add_parser("stop", help="Disconnect devices, then stop the server (keeps keys and IP; still billed)")
+    stop_p.add_argument("--no-disconnect", action="store_true",
+                        help="Stop the server without telling devices to drop their tunnel")
+    stop_p.add_argument("--timeout", type=float, default=5.0, help="mDNS scan timeout in seconds")
+    stop_p.add_argument("--region", default=os.environ.get("AWS_REGION", "sa-east-1"))
+    stop_p.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "personal"))
+
+    start_p = sub.add_parser("start", help="Start a stopped server and wait for WireGuard")
+    start_p.add_argument("--region", default=os.environ.get("AWS_REGION", "sa-east-1"))
+    start_p.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "personal"))
 
     push_p = sub.add_parser("push", help="Scan network + push config to devices")
     push_p.add_argument("--token", help="Bearer token (or set SHIELD_VPN_TOKEN)")
@@ -76,7 +89,7 @@ EXAMPLES:
     health_p.add_argument("--device", help="Device IP[:port] (skip mDNS scan)")
     health_p.add_argument("--timeout", type=float, default=5.0)
 
-    disc_p = sub.add_parser("disconnect", help="Disconnect devices and remove peers from server")
+    disc_p = sub.add_parser("disconnect", help="Tell devices to drop their tunnel (server peers are kept)")
     disc_p.add_argument("--device", help="Device IP[:port] (skip mDNS scan)")
     disc_p.add_argument("--timeout", type=float, default=5.0)
     disc_p.add_argument("--region", default=os.environ.get("AWS_REGION", "sa-east-1"))
@@ -87,6 +100,8 @@ EXAMPLES:
     commands = {
         "setup": cmd_setup,
         "teardown": cmd_teardown,
+        "stop": cmd_stop,
+        "start": cmd_start,
         "push": cmd_push,
         "status": cmd_status,
         "scan": cmd_scan,
@@ -109,13 +124,15 @@ def cmd_interactive() -> None:
     print("  1) Setup      — create VPS + WireGuard + push to devices")
     print("  2) Push       — scan network + push config to devices")
     print("  3) Status     — tunnel status + public IP + server peers")
-    print("  4) Disconnect — disconnect devices + remove peers")
+    print("  4) Disconnect — tell devices to drop their tunnel")
     print("  5) Teardown   — destroy all resources")
     print("  6) Scan       — scan for devices (no push)")
+    print("  7) Stop       — disconnect devices + stop server (keeps config)")
+    print("  8) Start      — start stopped server")
     print("  q) Quit")
     print()
 
-    choice = input("  Choose [1-6, q]: ").strip().lower()
+    choice = input("  Choose [1-8, q]: ").strip().lower()
 
     if choice == "1":
         region = _ask_region()
@@ -150,6 +167,19 @@ def cmd_interactive() -> None:
     elif choice == "6":
         ns = argparse.Namespace(timeout=5.0)
         cmd_scan(ns)
+    elif choice == "7":
+        ns = argparse.Namespace(
+            no_disconnect=False, timeout=5.0,
+            region=os.environ.get("AWS_REGION", "sa-east-1"),
+            profile=os.environ.get("AWS_PROFILE", "personal"),
+        )
+        cmd_stop(ns)
+    elif choice == "8":
+        ns = argparse.Namespace(
+            region=os.environ.get("AWS_REGION", "sa-east-1"),
+            profile=os.environ.get("AWS_PROFILE", "personal"),
+        )
+        cmd_start(ns)
     elif choice in ("q", ""):
         return
     else:
@@ -169,6 +199,33 @@ def cmd_setup(args: argparse.Namespace) -> None:
 
 def cmd_teardown(args: argparse.Namespace) -> None:
     infra.teardown(region=args.region, profile=args.profile)
+
+
+def cmd_stop(args: argparse.Namespace) -> None:
+    # Configs route 0.0.0.0/0 through the tunnel, so a device still connected
+    # to a stopped server loses internet entirely. Drop tunnels first.
+    if not args.no_disconnect:
+        print(f"▶ Scanning for devices to disconnect ({args.timeout}s)...")
+        devices = DeviceDiscovery(timeout=args.timeout).scan()
+        if not devices:
+            print("  No companion devices found.")
+        for device in devices:
+            token = _get_token(device, args)
+            if not token:
+                print(f"  ⚠️  No token for {device.name}, turn its tunnel off by hand")
+                continue
+            result = disconnect_device(device, token)
+            if result.success:
+                print(f"  ✅ {device.name} disconnected")
+            else:
+                print(f"  ⚠️  {device.name}: {result.error or f'HTTP {result.status_code}'}")
+    print("  ℹ️  Devices without the companion app (iPhone, Mac) must be turned off by hand.")
+    infra.stop(region=args.region, profile=args.profile)
+
+
+def cmd_start(args: argparse.Namespace) -> None:
+    infra.start(region=args.region, profile=args.profile)
+    print("  ℹ️  Turn the tunnel back on in each device's app.")
 
 
 def cmd_status(args: argparse.Namespace) -> None:

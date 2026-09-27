@@ -95,6 +95,10 @@ Each additional peer uses a new IP: `10.8.0.5/32`, `10.8.0.6/32`, etc.
 - **Kill when done**: ~$0.007/hr → watching 4h/week = ~$0.12/mo
   - `make tf-teardown` after watching, `make tf-setup` next time
   - New setup = new WireGuard keys = re-import config on all devices
+- **Stop/start** (`vps-lightsail stop` / `start`): keeps keys, peers and static IP, but
+  **does not save money** — Lightsail bills stopped instances. Use it to make sure no client
+  routes traffic. `stop` first sends `POST /disconnect` to companion devices, because a device
+  whose tunnel is still up (`AllowedIPs = 0.0.0.0/0`) loses internet when the server is down.
 
 ## COSTS
 
