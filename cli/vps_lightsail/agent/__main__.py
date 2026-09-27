@@ -14,8 +14,12 @@ import signal
 import sys
 import threading
 from collections.abc import Callable, Sequence
+from pathlib import Path
+
+from botocore.exceptions import ClientError
 
 from vps_lightsail import __version__
+from vps_lightsail.agent.clients import Clients, build_clients
 from vps_lightsail.agent.contract import build_discovery
 from vps_lightsail.agent.mqtt import MqttConnection
 from vps_lightsail.core.config import AgentConfig, ConfigError, load_config
@@ -33,6 +37,8 @@ def build_parser() -> argparse.ArgumentParser:
                                      description="Report the Lightsail VPN to Home Assistant over MQTT.")
     parser.add_argument("--config", required=True, metavar="PATH", help="agent YAML (spec-01 §8)")
     parser.add_argument("--once", action="store_true", help="connect, publish online, exit (image smoke)")
+    parser.add_argument("--fake", type=Path, metavar="DIR",
+                        help="read DIR/lightsail.json and DIR/server.json instead of AWS (demo, E2E)")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return parser
 
@@ -113,6 +119,22 @@ def run_forever(conn: MqttConnection, stop: threading.Event) -> int:
     return EXIT_OK
 
 
+def _boot_observation(clients: Clients, cfg: AgentConfig) -> None:
+    """Plan 01c2: one read at boot, so the log names the world the agent talks to (AWS or
+    --fake DIR). Daemon thread; never raises. 02a's state job supersedes it (02a may delete it)."""
+    log = logging.getLogger("vps_lightsail.agent")
+    try:
+        info = clients.factory(cfg.region).get_instance(cfg.instance_name)
+    except Exception as e:                        # a boot read must never take the agent down
+        code = e.response.get("Error", {}).get("Code") if isinstance(e, ClientError) else type(e).__name__
+        log.warning("boot observation failed: %s", code)
+        return
+    if info is None:
+        log.info("boot observation: no instance %s in %s", cfg.instance_name, cfg.region)
+    else:
+        log.info("boot observation: %s is %s in %s", info.name, info.state, info.region)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -120,6 +142,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     cfg = load_or_report(args.config)
     if cfg is None:
         return EXIT_CONFIG
+    try:
+        clients = build_clients(cfg, args.fake)
+    except FileNotFoundError as e:
+        print(e, file=sys.stderr)
+        raise SystemExit(2) from None
     log.info("vps-lightsail-agent %s: broker %s:%d, user %s, base topic %s", __version__, cfg.mqtt.host,
              cfg.mqtt.port, cfg.mqtt.username or "anonymous", cfg.mqtt.base_topic)
     conn = connect(cfg)
@@ -129,6 +156,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         install_stop_signals(stop)
     conn.start()
+    threading.Thread(target=_boot_observation, args=(clients, cfg), name="boot-observation",
+                     daemon=True).start()
     return run_once(conn, stop) if args.once else run_forever(conn, stop)
 
 
