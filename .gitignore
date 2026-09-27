@@ -40,3 +40,7 @@ DerivedData/
 shield-vpn-companion/android/.gradle/
 shield-vpn-companion/android/app/build/
 shield-vpn-companion/android/local.properties
+
+# ~/.gitignore ignores `_*`: keep the Python package markers tracked (plan 01a1).
+!__init__.py
+!__main__.py

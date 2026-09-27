@@ -1,20 +1,27 @@
 [project]
-name = "conf-push"
-version = "0.1.0"
+name = "vps-lightsail"
+version = "0.2.0"
 description = "VPS Lightsail VPN — setup, teardown, and config push to devices"
 requires-python = ">=3.14"
 dependencies = [
-    "zeroconf>=0.131.0",
+    "boto3>=1.35",
     "httpx>=0.27.0",
+    "zeroconf>=0.131.0",
+]
+
+[project.optional-dependencies]
+agent = [
+    "paho-mqtt>=2.1",
+    "PyYAML>=6.0",
+    "qrcode[pil]>=8.0",
 ]
 
 [project.scripts]
 vps-lightsail = "vps_lightsail.cli:main"
+vps-lightsail-agent = "vps_lightsail.agent.__main__:main"
 
 [dependency-groups]
-dev = [
-    "pytest>=8.0",
-]
+dev = ["pytest>=8.0", "vps-lightsail[agent]"]
 
 [build-system]
 requires = ["hatchling"]
@@ -22,3 +29,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["vps_lightsail"]
+
+[tool.pytest.ini_options]
+markers = [
+    "e2e: needs Docker (real Mosquitto container); run on jeff",
+    "live: touches real AWS; manual only",
+]
+addopts = "-m 'not e2e and not live'"
