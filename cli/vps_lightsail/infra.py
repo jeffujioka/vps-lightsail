@@ -174,6 +174,66 @@ def status(region: str = DEFAULT_REGION, profile: str = DEFAULT_PROFILE) -> None
     print(output)
 
 
+def _instance_state(profile: str, region: str) -> str:
+    return aws([
+        "get-instance",
+        "--instance-name", INSTANCE_NAME,
+        "--query", "instance.state.name",
+        "--output", "text",
+    ], profile, region)
+
+
+def _wait_for_state(target: str, profile: str, region: str, timeout: int = 300) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _instance_state(profile, region) == target:
+            return
+        time.sleep(5)
+    raise TimeoutError(f"Instance did not reach '{target}' within {timeout}s")
+
+
+def _server_ip(profile: str, region: str) -> str:
+    return aws([
+        "get-static-ip",
+        "--static-ip-name", STATIC_IP_NAME,
+        "--query", "staticIp.ipAddress",
+        "--output", "text",
+    ], profile, region)
+
+
+def stop(region: str = DEFAULT_REGION, profile: str = DEFAULT_PROFILE) -> None:
+    """Stop the instance, keeping disk, WireGuard keys and static IP. Still billed."""
+    if _instance_state(profile, region) == "stopped":
+        print("▶ Instance already stopped.")
+        return
+    print("▶ Stopping instance...")
+    aws(["stop-instance", "--instance-name", INSTANCE_NAME], profile, region)
+    _wait_for_state("stopped", profile, region)
+    print("✅ Instance stopped. No client can route traffic until `start`.")
+
+
+def start(region: str = DEFAULT_REGION, profile: str = DEFAULT_PROFILE) -> str:
+    """Start a stopped instance and wait until WireGuard is up. Returns server IP."""
+    key_path = Path.home() / ".ssh" / "vps-vpn.pem"
+    if _instance_state(profile, region) != "running":
+        print("▶ Starting instance...")
+        aws(["start-instance", "--instance-name", INSTANCE_NAME], profile, region)
+        _wait_for_state("running", profile, region)
+
+    server_ip = _server_ip(profile, region)
+    print(f"▶ Waiting for SSH on {server_ip}...")
+    _wait_for_ssh(server_ip, key_path)
+
+    wg_state = run([
+        "ssh", "-i", str(key_path), "-o", "StrictHostKeyChecking=no",
+        f"ubuntu@{server_ip}", "systemctl is-active wg-quick@wg0 || true",
+    ])
+    if wg_state != "active":
+        raise RuntimeError(f"wg-quick@wg0 is '{wg_state}' on {server_ip}")
+    print(f"✅ VPN server up: {server_ip}")
+    return server_ip
+
+
 def get_server_public_key(server_ip: str, key_path: Path) -> str:
     return run([
         "ssh", "-i", str(key_path), "-o", "StrictHostKeyChecking=no",
