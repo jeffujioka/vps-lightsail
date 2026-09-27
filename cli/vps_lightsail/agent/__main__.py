@@ -16,6 +16,7 @@ import threading
 from collections.abc import Callable, Sequence
 
 from vps_lightsail import __version__
+from vps_lightsail.agent.contract import build_discovery
 from vps_lightsail.agent.mqtt import MqttConnection
 from vps_lightsail.core.config import AgentConfig, ConfigError, load_config
 
@@ -24,6 +25,7 @@ log = logging.getLogger("vps_lightsail.agent")
 EXIT_OK, EXIT_FAILED, EXIT_CONFIG = 0, 1, 2
 ONCE_TIMEOUT_S = 30.0                        # 02c1's image smoke wraps --once in `timeout 60`
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT)
+SKELETON_SLICES = frozenset({"02"})          # index R12; 02a switches to runtime.ENABLED_SLICES
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,8 +55,17 @@ def load_or_report(path: str) -> AgentConfig | None:
 
 
 def connect(cfg: AgentConfig) -> MqttConnection:
-    """spec-01 §10 step 3: the password comes from the environment only."""
-    return MqttConnection(cfg.mqtt, password=os.environ.get("MQTT_PASSWORD"))
+    """spec-01 §10 step 3 (the password comes from the environment only) + index R12: the skeleton
+    publishes the slice-02 discovery, retained, on every connect right after "online"."""
+    conn = MqttConnection(cfg.mqtt, password=os.environ.get("MQTT_PASSWORD"))
+    discovery = build_discovery(cfg, SKELETON_SLICES)
+
+    def publish_discovery() -> None:
+        conn.publish_json(conn.topics.discovery, discovery)
+        log.info("published discovery %s (%d components)", conn.topics.discovery, len(discovery["cmps"]))
+
+    conn.on_connected = publish_discovery
+    return conn
 
 
 def chain_on_connected(conn: MqttConnection, fn: Callable[[], None]) -> None:
