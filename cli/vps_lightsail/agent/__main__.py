@@ -20,8 +20,8 @@ from botocore.exceptions import ClientError
 
 from vps_lightsail import __version__
 from vps_lightsail.agent.clients import Clients, build_clients
-from vps_lightsail.agent.contract import build_discovery
 from vps_lightsail.agent.mqtt import MqttConnection
+from vps_lightsail.agent.runtime import Agent
 from vps_lightsail.core.config import AgentConfig, ConfigError, load_config
 
 log = logging.getLogger("vps_lightsail.agent")
@@ -29,7 +29,6 @@ log = logging.getLogger("vps_lightsail.agent")
 EXIT_OK, EXIT_FAILED, EXIT_CONFIG = 0, 1, 2
 ONCE_TIMEOUT_S = 30.0                        # 02c1's image smoke wraps --once in `timeout 60`
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT)
-SKELETON_SLICES = frozenset({"02"})          # index R12; 02a switches to runtime.ENABLED_SLICES
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -63,17 +62,9 @@ def load_or_report(path: str) -> AgentConfig | None:
 
 
 def connect(cfg: AgentConfig) -> MqttConnection:
-    """spec-01 §10 step 3 (the password comes from the environment only) + index R12: the skeleton
-    publishes the slice-02 discovery, retained, on every connect right after "online"."""
-    conn = MqttConnection(cfg.mqtt, password=os.environ.get("MQTT_PASSWORD"))
-    discovery = build_discovery(cfg, SKELETON_SLICES)
-
-    def publish_discovery() -> None:
-        conn.publish_json(conn.topics.discovery, discovery)
-        log.info("published discovery %s (%d components)", conn.topics.discovery, len(discovery["cmps"]))
-
-    conn.on_connected = publish_discovery
-    return conn
+    """spec-01 §10 step 3: the password comes from the environment only. Discovery timing belongs
+    to the Agent (spec-02 §4, index R12)."""
+    return MqttConnection(cfg.mqtt, password=os.environ.get("MQTT_PASSWORD"))
 
 
 def chain_on_connected(conn: MqttConnection, fn: Callable[[], None]) -> None:
@@ -114,13 +105,6 @@ def run_once(conn: MqttConnection, connected: threading.Event) -> int:
     return EXIT_OK if ok else EXIT_FAILED
 
 
-def run_forever(conn: MqttConnection, stop: threading.Event) -> int:
-    """spec-01 §10 steps 4-5: "online" on every connect; on stop: "offline", clean disconnect."""
-    stop.wait()
-    conn.stop()
-    return EXIT_OK
-
-
 def _boot_observation(clients: Clients, cfg: AgentConfig) -> None:
     """Plan 01c2: one read at boot, so the log names the world the agent talks to (AWS or
     --fake DIR). Daemon thread; never raises. 02a's state job supersedes it (02a may delete it)."""
@@ -153,14 +137,15 @@ def main(argv: Sequence[str] | None = None) -> int:
              cfg.mqtt.port, cfg.mqtt.username or "anonymous", cfg.mqtt.base_topic)
     conn = connect(cfg)
     stop = threading.Event()
-    if args.once:
-        chain_on_connected(conn, stop.set)      # --once: the first connect is the stop
-    else:
-        install_stop_signals(stop)
-    conn.start()
-    threading.Thread(target=_boot_observation, args=(clients, cfg), name="boot-observation",
-                     daemon=True).start()
-    return run_once(conn, stop) if args.once else run_forever(conn, stop)
+    if args.once:                                # spec-01 §10 step 6: connect, "online", exit
+        chain_on_connected(conn, stop.set)
+        conn.start()
+        return run_once(conn, stop)
+    install_stop_signals(stop)
+    agent = Agent(cfg, clients, conn)
+    threading.Thread(target=_boot_observation, args=(clients, cfg), name="boot-observation", daemon=True).start()
+    agent.run(stop)                              # starts the connection; returns after "offline"
+    return EXIT_OK
 
 
 if __name__ == "__main__":
