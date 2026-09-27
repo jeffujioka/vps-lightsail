@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol
 
 import boto3
+import copy
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
@@ -68,6 +69,9 @@ class LightsailClient(Protocol):
 # --- plan 01c1: the boto3 half (spec-01 §2 bullets, spec-02 §1.3, M11) -----------------------
 BOTO_CONFIG = Config(connect_timeout=5, read_timeout=15,
                      retries={"mode": "standard", "max_attempts": 3})     # spec-02 §1.3, index §5.2
+# botocore rewrites a Config's retries in place on client() (max_attempts → total_max_attempts),
+# so every client gets its own deep copy — the shared BOTO_CONFIG must stay pristine for tests
+# and for retries to behave as pinned.
 
 
 def _now() -> datetime:
@@ -89,7 +93,7 @@ class Boto3Lightsail:
     def __init__(self, region: str, profile: str | None = None) -> None:
         self.region = region
         self._client = boto3.Session(profile_name=profile, region_name=region).client(
-            "lightsail", config=BOTO_CONFIG)
+            "lightsail", config=copy.deepcopy(BOTO_CONFIG))
 
     def get_instance(self, name: str) -> InstanceInfo | None:
         try:
