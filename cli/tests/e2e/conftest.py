@@ -24,6 +24,8 @@ import paho.mqtt.client as mqtt
 import pytest
 import yaml
 
+from vps_lightsail.core.fakes import locked, read_json, write_json
+
 E2E_DIR = Path(__file__).resolve().parent
 MOSQUITTO_DIR = E2E_DIR / "mosquitto"
 MOSQUITTO_IMAGE = "eclipse-mosquitto:2.1.2-alpine"                        # index R20 / M14
@@ -204,8 +206,10 @@ class AgentRunner:
     """`python -m vps_lightsail.agent --config CFG *extra_args` as a subprocess, output → agent.log."""
 
     def __init__(self, broker: Broker, workdir: Path, *, extra_args: Sequence[str] = (),
-                 config: Mapping[str, object] | None = None, env: Mapping[str, str] | None = None) -> None:
+                 config: Mapping[str, object] | None = None, env: Mapping[str, str] | None = None,
+                 fake_dir: Path | None = None) -> None:
         self.broker, self.workdir, self.extra_args = broker, workdir, tuple(extra_args)
+        self.fake_dir = fake_dir
         self.base_config, self.base_env = deep_merge(agent_config(broker), config or {}), dict(env or {})
         self.config_path, self.log_path = workdir / "agent.yaml", workdir / "agent.log"
         self.proc: subprocess.Popen[bytes] | None = None
@@ -217,7 +221,9 @@ class AgentRunner:
                     **self.base_env, **(env or {})}
         with self.log_path.open("ab") as log:
             self.proc = subprocess.Popen([sys.executable, "-m", "vps_lightsail.agent", "--config",
-                                          str(self.config_path), *self.extra_args],
+                                          str(self.config_path),
+                                          *(["--fake", str(self.fake_dir)] if self.fake_dir else []),
+                                          *self.extra_args],
                                          stdout=log, stderr=subprocess.STDOUT, env=full_env, cwd=self.workdir)
 
     def _alive(self) -> bool:
@@ -274,7 +280,65 @@ def mqtt_watch(clean_broker: Broker) -> Iterator[Watcher]:
 
 
 @pytest.fixture
-def agent(clean_broker: Broker, tmp_path: Path) -> Iterator[AgentRunner]:
-    runner = AgentRunner(clean_broker, tmp_path)
+def agent(clean_broker: Broker, tmp_path: Path, fake_world: "FakeWorld") -> Iterator[AgentRunner]:
+    runner = AgentRunner(clean_broker, tmp_path, fake_dir=fake_world.dir)
     yield runner
     runner.close()
+
+
+# --- plan 01c2: the fake world (index §5.3/§5.5) ---------------------------------------------
+WORLD_INSTANCE = {"name": "personal-vps-vpn", "arn": "arn:fake", "state": "running",
+                  "created_at": "2026-09-26T09:00:00Z", "public_ip": "203.0.113.10", "bundle_id": "nano_3_1"}
+
+
+class FakeWorld:
+    """DIR/lightsail.json + DIR/server.json, edited while the agent runs (index §5.5). Starts as
+    spec-01 §9.1's example world plus `transition_seconds: 2`, and a healthy server with no peers."""
+
+    def __init__(self, dir: Path) -> None:
+        self.dir = Path(dir)
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.lightsail, self.server = self.dir / "lightsail.json", self.dir / "server.json"
+        write_json(self.lightsail, {
+            "region": "sa-east-1", "instance": dict(WORLD_INSTANCE), "static_ip": "203.0.113.10",
+            "bundle": {"bundle_id": "nano_3_1", "price_usd_month": 5.0, "transfer_gb_month": 512},
+            "network": {"NetworkIn": {"2026-09-26T09": 1000}, "NetworkOut": {"2026-09-26T09": 5000}},
+            "status_check_failed": False, "transition_seconds": 2, "calls": []})
+        write_json(self.server, {"ssh_ok": True, "wg_active": True, "peers": [], "wg_conf_ips": [],
+                                 "wg_conf_duplicates": [], "error": None})
+
+    def _edit(self, path: Path, change) -> None:
+        with locked(path):
+            doc = read_json(path)
+            change(doc)
+            write_json(path, doc)
+
+    def set_instance(self, **fields) -> None:
+        """Merge into the instance (the default one when absent); a new `state` restarts the
+        fake's transition clock."""
+        def change(doc: dict) -> None:
+            inst = dict(doc.get("instance") or WORLD_INSTANCE)
+            if "state" in fields:
+                inst.pop("state_since", None)
+            doc["instance"] = {**inst, **fields}
+        self._edit(self.lightsail, change)
+
+    def clear_instance(self) -> None:
+        self._edit(self.lightsail, lambda doc: doc.update(instance=None))
+
+    def set_server(self, **fields) -> None:
+        self._edit(self.server, lambda doc: doc.update(fields))
+
+    def patch(self, **top_level) -> None:
+        self._edit(self.lightsail, lambda doc: doc.update(top_level))
+
+    def calls(self, method: str | None = None) -> list[dict]:
+        return [c for c in self.read().get("calls", []) if method in (None, c["method"])]
+
+    def read(self) -> dict:
+        return read_json(self.lightsail)
+
+
+@pytest.fixture
+def fake_world(tmp_path) -> FakeWorld:
+    return FakeWorld(tmp_path / "world")
