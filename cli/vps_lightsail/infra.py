@@ -181,6 +181,37 @@ def get_server_public_key(server_ip: str, key_path: Path) -> str:
     ])
 
 
+def parse_allowed_ips(wg_conf: str) -> set[str]:
+    """Extract peer IPs (without /32) from the AllowedIPs lines of a wg0.conf."""
+    ips = set()
+    for line in wg_conf.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.strip() == "AllowedIPs":
+            ips.update(cidr.strip().split("/")[0] for cidr in value.split(",") if cidr.strip())
+    return ips
+
+
+def next_free_peer_ip(used: set[str]) -> str:
+    """Lowest 10.8.0.x not in use. .1 is the server."""
+    for n in range(2, 255):
+        candidate = f"10.8.0.{n}"
+        if candidate not in used:
+            return candidate
+    raise RuntimeError("No free peer IP left in 10.8.0.0/24")
+
+
+def used_peer_ips(server_ip: str, key_path: Path) -> set[str]:
+    """Peer IPs claimed in the server's wg0.conf.
+
+    Reads the config file rather than `wg show`: when two peers claim the same
+    IP, `wg show` reports the loser as `(none)` and would hide the collision.
+    """
+    return parse_allowed_ips(run([
+        "ssh", "-i", str(key_path), "-o", "StrictHostKeyChecking=no",
+        f"ubuntu@{server_ip}", "sudo cat /etc/wireguard/wg0.conf",
+    ]))
+
+
 def add_peer(server_ip: str, key_path: Path, peer_ip: str) -> tuple[str, str]:
     """Generate keypair on server, add peer. Returns (private_key, public_key)."""
     private = run([

@@ -282,10 +282,11 @@ def _push_to_devices(args: argparse.Namespace, vps: infra.VPSInfo) -> None:
         return
 
     server_public = infra.get_server_public_key(vps.server_ip, vps.key_path)
-    peer_base = 2
+    used_ips = infra.used_peer_ips(vps.server_ip, vps.key_path)
 
     for device in selected:
-        peer_ip = f"10.8.0.{peer_base}"
+        peer_ip = infra.next_free_peer_ip(used_ips)
+        used_ips.add(peer_ip)
         print(f"\n▶ Configuring {device.name} ({device.ip}) as peer {peer_ip}...")
 
         private_key, _ = infra.add_peer(vps.server_ip, vps.key_path, peer_ip)
@@ -306,8 +307,6 @@ def _push_to_devices(args: argparse.Namespace, vps: infra.VPSInfo) -> None:
                 save_path.write_text(conf)
                 print(f"  ⚠️  {device.name} returned HTTP {result.status_code}")
                 print(f"  📋 Config saved to {save_path}")
-
-        peer_base += 1
 
 
 def _select_devices(devices: list[Device]) -> list[Device]:
