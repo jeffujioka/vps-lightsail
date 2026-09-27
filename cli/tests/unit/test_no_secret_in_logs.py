@@ -32,6 +32,12 @@ def leaks(*texts: str) -> list[str]:
 
 
 def test_main_config_errors_and_every_callback_path(tmp_path, monkeypatch, caplog, capsys):
+    # hermetic boot: _boot_observation must not reach the network from a unit test (a real boto3
+    # GetInstance is also a flake source: botocore's DEBUG log carries the request credential)
+    booted = []
+    monkeypatch.setattr(agent_main, "build_clients", lambda cfg, fake: booted.append(True) or agent_main.Clients(
+        factory=lambda _region: type("StubLightsail", (), {"get_instance": lambda self, name: None})(),
+        probe_factory=lambda _region: None))
     factory, client = fake_paho(REFUSED, ACCEPTED)                       # refused once, then accepted
     monkeypatch.setattr(agent_main, "MqttConnection", functools.partial(MqttConnection, client_factory=factory))
     good, typo, broken = tmp_path / "good.yaml", tmp_path / "typo.yaml", tmp_path / "broken.yaml"
@@ -39,6 +45,7 @@ def test_main_config_errors_and_every_callback_path(tmp_path, monkeypatch, caplo
     typo.write_text(f"mqtt: {{password: {PASSWORD}, port: nope}}\n")      # a secret typed into the YAML
     broken.write_text(f"mqtt:\n  host: [\n  token: {SECRETS['PEER_SHIELD_TOKEN']}\n")
     assert agent_main.main(["--config", str(good), "--once"]) == 0
+    assert booted == [True]                                              # stubbed clients, no network
     assert [agent_main.main(["--config", str(p)]) for p in (typo, broken)] == [2, 2]
     client.username_pw_set.assert_called_once_with("vps-lightsail-agent", PASSWORD)  # used, not logged
     conn = MqttConnection(CFG, PASSWORD, client_factory=fake_paho()[0])
