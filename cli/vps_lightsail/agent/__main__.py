@@ -47,6 +47,8 @@ def configure_logging() -> None:
     """One line per event on stderr; level from VPS_LIGHTSAIL_LOG_LEVEL (default INFO)."""
     level = logging.getLevelNamesMapping().get(os.environ.get("VPS_LIGHTSAIL_LOG_LEVEL", "INFO").upper(), logging.INFO)
     logging.basicConfig(level=level, stream=sys.stderr, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    for noisy in ("botocore", "boto3", "urllib3"):   # their DEBUG logs carry the AWS credential
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
 def load_or_report(path: str) -> AgentConfig | None:
