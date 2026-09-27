@@ -1,0 +1,183 @@
+{
+  "avty_t": "vps_lightsail/agent/availability",
+  "cmps": {
+    "allowance_pct": {
+      "def_ent_id": "sensor.vps_lightsail_allowance_pct",
+      "name": "Allowance used",
+      "p": "sensor",
+      "stat_t": "vps_lightsail/metrics",
+      "uniq_id": "vps_lightsail_allowance_pct",
+      "unit_of_meas": "%",
+      "val_tpl": "{{ value_json.allowance_pct }}"
+    },
+    "aws_state": {
+      "def_ent_id": "sensor.vps_lightsail_aws_state",
+      "ent_cat": "diagnostic",
+      "name": "AWS state",
+      "p": "sensor",
+      "stat_t": "vps_lightsail/state",
+      "uniq_id": "vps_lightsail_aws_state",
+      "val_tpl": "{{ value_json.aws_state or 'nonexistent' }}"
+    },
+    "cost_month": {
+      "def_ent_id": "sensor.vps_lightsail_cost_month",
+      "dev_cla": "monetary",
+      "name": "Cost this month (est.)",
+      "p": "sensor",
+      "stat_t": "vps_lightsail/metrics",
+      "uniq_id": "vps_lightsail_cost_month",
+      "unit_of_meas": "USD",
+      "val_tpl": "{{ value_json.cost_month_usd }}"
+    },
+    "cost_projected": {
+      "def_ent_id": "sensor.vps_lightsail_cost_projected",
+      "dev_cla": "monetary",
+      "name": "Projected month cost (est.)",
+      "p": "sensor",
+      "stat_t": "vps_lightsail/metrics",
+      "uniq_id": "vps_lightsail_cost_projected",
+      "unit_of_meas": "USD",
+      "val_tpl": "{{ value_json.cost_projected_usd }}"
+    },
+    "data_total": {
+      "def_ent_id": "sensor.vps_lightsail_data_total",
+      "dev_cla": "data_size",
+      "name": "Data used this month",
+      "p": "sensor",
+      "stat_cla": "measurement",
+      "stat_t": "vps_lightsail/metrics",
+      "sug_dsp_prc": 2,
+      "uniq_id": "vps_lightsail_data_total",
+      "unit_of_meas": "GB",
+      "val_tpl": "{{ value_json.data_total_gb }}"
+    },
+    "hourly_rate": {
+      "def_ent_id": "sensor.vps_lightsail_hourly_rate",
+      "ent_cat": "diagnostic",
+      "name": "Hourly rate",
+      "p": "sensor",
+      "stat_t": "vps_lightsail/metrics",
+      "uniq_id": "vps_lightsail_hourly_rate",
+      "unit_of_meas": "USD/h",
+      "val_tpl": "{{ value_json.hourly_usd }}"
+    },
+    "ip": {
+      "def_ent_id": "sensor.vps_lightsail_ip",
+      "ic": "mdi:ip-network",
+      "name": "Public IP",
+      "p": "sensor",
+      "stat_t": "vps_lightsail/state",
+      "uniq_id": "vps_lightsail_ip",
+      "val_tpl": "{{ value_json.ip }}"
+    },
+    "last_result": {
+      "def_ent_id": "sensor.vps_lightsail_last_result",
+      "json_attr_t": "vps_lightsail/cmd/result",
+      "name": "Last command",
+      "p": "sensor",
+      "stat_t": "vps_lightsail/cmd/result",
+      "uniq_id": "vps_lightsail_last_result",
+      "val_tpl": "{{ value_json.message }}"
+    },
+    "peer_iphone": {
+      "def_ent_id": "binary_sensor.vps_lightsail_peer_iphone",
+      "dev_cla": "connectivity",
+      "name": "Iphone connected",
+      "p": "binary_sensor",
+      "stat_t": "vps_lightsail/peers",
+      "uniq_id": "vps_lightsail_peer_iphone",
+      "val_tpl": "{{ 'ON' if value_json.peers | selectattr('name', 'eq', 'iphone') | selectattr('connected') | list else 'OFF' }}"
+    },
+    "peer_shield": {
+      "def_ent_id": "binary_sensor.vps_lightsail_peer_shield",
+      "dev_cla": "connectivity",
+      "name": "Shield connected",
+      "p": "binary_sensor",
+      "stat_t": "vps_lightsail/peers",
+      "uniq_id": "vps_lightsail_peer_shield",
+      "val_tpl": "{{ 'ON' if value_json.peers | selectattr('name', 'eq', 'shield') | selectattr('connected') | list else 'OFF' }}"
+    },
+    "peers_connected": {
+      "def_ent_id": "sensor.vps_lightsail_peers_connected",
+      "json_attr_t": "vps_lightsail/peers",
+      "name": "Connected peers",
+      "p": "sensor",
+      "stat_t": "vps_lightsail/peers",
+      "uniq_id": "vps_lightsail_peers_connected",
+      "val_tpl": "{{ value_json.connected_count }}"
+    },
+    "problem": {
+      "def_ent_id": "binary_sensor.vps_lightsail_problem",
+      "dev_cla": "problem",
+      "name": "Problem",
+      "p": "binary_sensor",
+      "stat_t": "vps_lightsail/state",
+      "uniq_id": "vps_lightsail_problem",
+      "val_tpl": "{{ 'ON' if value_json.state in ['unreachable', 'wg_down', 'error'] else 'OFF' }}"
+    },
+    "region": {
+      "def_ent_id": "sensor.vps_lightsail_region",
+      "name": "Region",
+      "p": "sensor",
+      "stat_t": "vps_lightsail/state",
+      "uniq_id": "vps_lightsail_region",
+      "val_tpl": "{{ value_json.region }}"
+    },
+    "start": {
+      "cmd_t": "vps_lightsail/cmd/start",
+      "def_ent_id": "button.vps_lightsail_start",
+      "ic": "mdi:play",
+      "name": "Start",
+      "p": "button",
+      "pl_prs": "PRESS",
+      "uniq_id": "vps_lightsail_start"
+    },
+    "state": {
+      "def_ent_id": "sensor.vps_lightsail_state",
+      "dev_cla": "enum",
+      "json_attr_t": "vps_lightsail/state",
+      "name": "State",
+      "ops": [
+        "nonexistent",
+        "creating",
+        "provisioning",
+        "starting",
+        "healthy",
+        "wg_down",
+        "unreachable",
+        "stopping",
+        "stopped",
+        "destroying",
+        "error"
+      ],
+      "p": "sensor",
+      "stat_t": "vps_lightsail/state",
+      "uniq_id": "vps_lightsail_state",
+      "val_tpl": "{{ value_json.state }}"
+    },
+    "stop": {
+      "cmd_t": "vps_lightsail/cmd/stop",
+      "def_ent_id": "button.vps_lightsail_stop",
+      "ic": "mdi:stop",
+      "name": "Stop",
+      "p": "button",
+      "pl_prs": "PRESS",
+      "uniq_id": "vps_lightsail_stop"
+    }
+  },
+  "dev": {
+    "ids": [
+      "vps_lightsail"
+    ],
+    "mdl": "WireGuard on AWS Lightsail",
+    "mf": "vps-lightsail",
+    "name": "VPS Lightsail",
+    "sw": "<__version__>"
+  },
+  "o": {
+    "name": "vps-lightsail-agent",
+    "sw": "<__version__>",
+    "url": "https://github.com/guicheffer/vps-lightsail"
+  },
+  "qos": 1
+}
