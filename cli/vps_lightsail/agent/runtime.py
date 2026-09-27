@@ -13,6 +13,7 @@ from paho.mqtt.client import topic_matches_sub
 
 from vps_lightsail.agent.clients import Clients
 from vps_lightsail.agent.contract import build_discovery, removal_entries
+from vps_lightsail.agent.metrics_job import MetricsJob
 from vps_lightsail.agent.mqtt import MqttConnection
 from vps_lightsail.agent.retained import RetainedReader
 from vps_lightsail.agent.scheduler import Scheduler
@@ -20,6 +21,7 @@ from vps_lightsail.agent.snapshot import AgentSnapshot, IdleOperations, Operatio
 from vps_lightsail.agent.state_job import StateJob
 from vps_lightsail.core.clock import SYSTEM_CLOCK, Clock
 from vps_lightsail.core.config import AgentConfig
+from vps_lightsail.core.ledger import month_key
 from vps_lightsail.core.lightsail import InstanceInfo
 
 log = logging.getLogger("vps_lightsail.agent.runtime")
@@ -69,6 +71,11 @@ class Agent:
         self._reader = RetainedReader((), RESTORE_WINDOW_S)          # opened by the first connect
         self.state_job = StateJob(cfg, clients, self.snapshot, ops, clock, self.publish_guarded, self.topics)
         self.scheduler.add(STATE_JOB, cfg.poll.state_seconds, lambda: self._run_state_job())
+        self._ledger_topic = self.topics.ledger(month_key(clock.now()))
+        self._metrics = MetricsJob(cfg, lambda region: self.clients.factory(region),   # lazy: 02a's unit rigs pass
+                                   self.topics, self.publish_guarded, clock=clock,       # MagicMock(spec=Clients), no .factory
+                                   on_region_found=self._switch_region)   # 02a2 seam (d): L1-guarded publish
+        self.scheduler.add("metrics", cfg.poll.metrics_seconds, self._metrics.run, after="state")
         self._events: queue.SimpleQueue[tuple] = queue.SimpleQueue()
         self._routes: list[Route] = []
         self._hooks: list[Callable[[], None]] = []
@@ -126,16 +133,24 @@ class Agent:
         ok, info = self.state_job.run()
         self._after_state_poll(ok, info)
 
-    def _after_state_poll(self, ok: bool, info: InstanceInfo | None) -> None:
-        """Scheduler thread, after every state run (plan 02b: MetricsJob.state_polled / state_poll_failed)."""
-        log.debug("state poll ok=%s, instance %s", ok, "found" if info is not None else "absent")
+    def _after_state_poll(self, ok: bool, info: InstanceInfo | None) -> None:      # S3b, after every state job
+        if ok:
+            self._metrics.state_polled(self.snapshot.region, info)
+        else:
+            self._metrics.state_poll_failed()
+
+    def _switch_region(self, region: str) -> None:                                 # S3d, R13
+        log.info("region scan: tracked region %s -> %s", self.snapshot.region, region)   # 02a1's logger
+        self.snapshot.region = region
+        self.request_refresh()
 
     def _restore_topics(self) -> list[str]:
         """Read back during the boot window (spec-02 §1.4, M4); 02b adds BASE/ledger/<month>."""
-        return [self.topics.state, self.topics.discovery]
+        return [self.topics.state, self.topics.discovery, self._ledger_topic]
 
     def _on_restored(self, retained: Mapping[str, bytes]) -> None:
         """Scheduler thread, window closed, before any job is due (02b restores its ledger here)."""
+        self._metrics.restore(retained.get(self._ledger_topic))
         state = _json_or_none(retained.get(self.topics.state))
         with self.snapshot.lock:
             self.snapshot.last_state = state
