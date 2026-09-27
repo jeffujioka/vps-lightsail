@@ -73,11 +73,17 @@ def gated_job(runs, gate, fail=False):
             raise RuntimeError("boom")
     return job
 
+def restore_now(agent, conn):
+    """02a2: the first connect opens the 5 s restore window; jump the FakeClock past it."""
+    conn.on_connected()
+    assert eventually(lambda: agent._reader.active)
+    agent.clock.advance(runtime.RESTORE_WINDOW_S)
+
 def test_callbacks_only_enqueue_and_the_scheduler_thread_publishes(rig):
     agent, conn, stop, main = rig
     main.start()
     assert eventually(lambda: conn.log == ["start"])                # run() starts the connection
-    conn.on_connected()                                             # paho thread: returns at once
+    restore_now(agent, conn)                                        # paho thread: returns at once
     assert eventually(lambda: [s[0] for s in conn.sent] == [DISC])
     topic, obj, retain, qos, thread = conn.sent[0]
     assert (obj, retain, qos, thread) == (agent.discovery, True, 1, "scheduler")
@@ -92,10 +98,12 @@ def test_routes_are_subscribed_on_every_connect_and_on_subscribed_follows_their_
     agent.add_message_route("vps_lightsail/peer/+/qr", lambda *m: 1 / 0, qos=0)
     conn.on_connected()
     conn.on_connected()                                             # a reconnect subscribes again
-    assert conn.subs == [("vps_lightsail/cmd/#", 1), ("vps_lightsail/peer/+/qr", 0)] * 2
-    conn.on_subscribed(2)                                           # SUBACK of the route without a callback
+    routes = [s for s in conn.subs if s[0] in ("vps_lightsail/cmd/#", "vps_lightsail/peer/+/qr")]
+    assert routes == [("vps_lightsail/cmd/#", 1), ("vps_lightsail/peer/+/qr", 0)] * 2
+    cmd, qr = ([i + 1 for i, s in enumerate(conn.subs) if s[0] == f] for f in ("vps_lightsail/cmd/#", "vps_lightsail/peer/+/qr"))
+    conn.on_subscribed(qr[0])                                           # SUBACK of the route without a callback
     assert acked == []
-    conn.on_subscribed(3)                                           # SUBACK of the cmd filter, 2nd connect
+    conn.on_subscribed(cmd[1])                                           # SUBACK of the cmd filter, 2nd connect
     assert acked == [1]
     conn.on_message("vps_lightsail/cmd/start", b"PRESS", False)
     conn.on_message("vps_lightsail/peer/x/qr", b"", True)           # a raising handler is contained
@@ -104,10 +112,11 @@ def test_routes_are_subscribed_on_every_connect_and_on_subscribed_follows_their_
 
 
 def test_queued_refreshes_coalesce_into_one_immediate_state_run(rig):
-    agent, _, _, main = rig
+    agent, conn, _, main = rig
     runs, gate = [], threading.Event()
     agent.scheduler.add(runtime.STATE_JOB, 3600, gated_job(runs, gate))
     main.start()
+    restore_now(agent, conn)
     assert eventually(lambda: len(runs) == 1)                       # due at start, now blocked
     for _ in range(5):
         agent.request_refresh()                                     # queued together, from any thread
@@ -124,6 +133,7 @@ def test_shutdown_waits_for_the_job_then_hooks_then_offline(rig, caplog):
     agent.add_shutdown_hook(lambda: conn.log.append("hook"))
     caplog.set_level("INFO")
     main.start()
+    restore_now(agent, conn)
     assert eventually(lambda: len(runs) == 1)
     stop.set()
     main.join(0.5)
@@ -135,11 +145,12 @@ def test_shutdown_waits_for_the_job_then_hooks_then_offline(rig, caplog):
 
 
 def test_a_failing_job_is_logged_and_still_touches_the_heartbeat(rig, caplog):
-    agent, _, _, main = rig
+    agent, conn, _, main = rig
     runs, gate = [], threading.Event()
     gate.set()
     agent.scheduler.add(runtime.STATE_JOB, 3600, gated_job(runs, gate, fail=True))
     main.start()
+    restore_now(agent, conn)
     assert eventually(lambda: runtime.HEARTBEAT.exists() and len(runs) == 1)
     first = runtime.HEARTBEAT.stat().st_mtime_ns
     time.sleep(0.05)
