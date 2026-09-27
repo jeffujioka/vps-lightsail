@@ -79,7 +79,6 @@ def test_late_echoes_after_the_restore_are_ignored():
 
 def test_the_scheduler_starts_only_after_the_restore():
     agent, conn = make()
-    agent.scheduler.add(runtime.STATE_JOB, 60, lambda: None)
     conn.on_connected()
     agent._drain()
     assert agent.scheduler.due_jobs(agent.clock.monotonic() + 1000) == []

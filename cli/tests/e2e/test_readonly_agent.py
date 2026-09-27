@@ -61,3 +61,76 @@ def test_a_peer_removed_from_the_config_is_removed_from_ha(agent, mqtt_watch):  
     mqtt_watch.resubscribe()
     assert "peer_ipad" not in mqtt_watch.wait_for(DISCOVERY, retained=True, timeout=5.0).json()["cmps"]
     assert "published discovery removal for peer_ipad" in agent.logs()
+
+SHIELD = {"public_key": "SHIELDKEY", "allowed_ips": "10.8.0.2/32", "endpoint": "198.51.100.7:51413",
+          "rx_bytes": 7440912, "tx_bytes": 257689968}
+
+def state_is(value):
+    return lambda m: m.json()["state"] == value
+
+def test_e1_healthy(agent, fake_world, mqtt_watch):
+    fake_world.set_server(peers=[{**SHIELD, "latest_handshake": int(time.time()) - 40}])
+    agent.start()
+    mqtt_watch.wait_for(STATE, state_is("healthy"), timeout=15.0)
+    peers = mqtt_watch.wait_for(PEERS, lambda m: m.json()["connected_count"] == 1, timeout=5.0).json()
+    assert {p["name"]: p["connected"] for p in peers["peers"]} == {"shield": True, "iphone": False}
+    assert fake_world.calls("get_access_details")                      # the probe ran
+
+def test_e2_running_in_grace_is_starting(agent, fake_world, mqtt_watch):
+    fake_world.set_server(ssh_ok=False)
+    agent.start()
+    assert mqtt_watch.wait_for(STATE, timeout=15.0).json()["state"] == "starting"   # the first verdict
+
+def test_e3_unreachable_after_grace(agent, fake_world, mqtt_watch):
+    fake_world.set_server(ssh_ok=False)
+    agent.start()
+    starting = mqtt_watch.wait_for(STATE, state_is("starting"), timeout=15.0).json()
+    unreachable = mqtt_watch.wait_for(STATE, state_is("unreachable"), timeout=10.0).json()   # grace 3 s
+    assert unreachable["since"] != starting["since"] and unreachable["state"] in ("unreachable", "wg_down", "error")
+
+def test_e4_wg_down(agent, fake_world, mqtt_watch):
+    fake_world.set_server(wg_active=False, peers=[{**SHIELD, "latest_handshake": int(time.time()) - 40}])
+    agent.start()
+    mqtt_watch.wait_for(STATE, state_is("wg_down"), timeout=15.0)
+    peers = mqtt_watch.wait_for(PEERS, timeout=5.0).json()
+    assert peers["connected_count"] == 0 and not any(p["connected"] for p in peers["peers"])
+
+def test_e5_stopped_is_never_probed(agent, fake_world, mqtt_watch):
+    fake_world.set_instance(state="stopped")
+    agent.start()
+    mqtt_watch.wait_for(STATE, state_is("stopped"), timeout=15.0)
+    time.sleep(2.5)                                                    # two more state cycles
+    assert fake_world.calls("get_access_details") == [] and len(fake_world.calls("get_instance")) >= 3
+
+def test_e6_nonexistent(agent, fake_world, mqtt_watch):
+    fake_world.clear_instance()
+    agent.start()
+    doc = mqtt_watch.wait_for(STATE, state_is("nonexistent"), timeout=15.0).json()
+    assert (doc["ip"], doc["aws_state"]) == (None, None)
+    assert not any(p["connected"] for p in mqtt_watch.wait_for(PEERS, timeout=5.0).json()["peers"])
+
+def test_e7_collisions_reach_peers_and_state(agent, fake_world, mqtt_watch):
+    fake_world.set_server(wg_conf_duplicates=["10.8.0.3"])
+    agent.start()
+    mqtt_watch.wait_for(PEERS, lambda m: m.json()["collisions"] == ["10.8.0.3"], timeout=15.0)
+    mqtt_watch.wait_for(STATE, lambda m: m.json()["collisions"] == ["10.8.0.3"], timeout=5.0)      # R18 / M5
+
+def test_e12_throttling_publishes_nothing_then_resumes(agent, fake_world, mqtt_watch):
+    agent.start()
+    mqtt_watch.wait_for(STATE, state_is("healthy"), timeout=15.0)
+    fake_world.patch(fail={"get_instance": "ThrottlingException"})     # R6 string form: every call
+    time.sleep(1.5)                                                    # let a cycle in flight finish
+    quiet_from = time.time()
+    time.sleep(4)                                                      # > 2 gate refreshes (metrics_seconds: 2)
+    assert [m for m in mqtt_watch.all(STATE) if m.ts > quiet_from] == [] and agent.proc.poll() is None
+    assert "state poll failed" in agent.logs()
+    fake_world.patch(fail={})
+    mqtt_watch.wait_for(STATE, lambda m: m.ts > quiet_from, timeout=10.0)
+
+def test_the_retained_region_is_polled_and_published(agent, fake_world, mqtt_watch):   # R13 / M11
+    seed = json.dumps({"state": "healthy", "region": "eu-west-1"})
+    mqtt_watch.client.publish(STATE, seed, qos=1, retain=True).wait_for_publish(5.0)
+    agent.start()
+    doc = mqtt_watch.wait_for(STATE, lambda m: "updated_at" in m.json(), timeout=15.0).json()
+    assert (doc["region"], doc["state"]) == ("eu-west-1", "nonexistent")      # the fake instance is in sa-east-1
+    assert fake_world.calls("get_instance")[0]["region"] == "eu-west-1"
