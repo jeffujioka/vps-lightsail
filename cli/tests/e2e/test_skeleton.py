@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import time
 
+import vps_lightsail
+from tests.unit.discovery_golden import load_golden, normalise_sw
+
 AVAIL = "vps_lightsail/agent/availability"
+DISCOVERY = "homeassistant/device/vps_lightsail/config"
 
 
 def online(m) -> bool:
@@ -50,3 +54,14 @@ def test_config_errors_exit_2_and_list_every_problem(agent):
     assert "invalid config" in logs
     for problem in ("mqtt.port: must be an integer", "poll.state_seconds: must be a number", "peers[0].name: must match"):
         assert problem in logs
+
+
+def test_retained_discovery_is_the_slice_02_golden(agent, mqtt_watch):          # plan 01b3, index R12
+    agent.start()
+    mqtt_watch.wait_for(AVAIL, online, timeout=5.0)
+    mqtt_watch.wait_for(DISCOVERY, timeout=5.0)                               # published right after online …
+    mqtt_watch.resubscribe()                                                  # … and retained
+    got = mqtt_watch.wait_for(DISCOVERY, retained=True, timeout=5.0).json()
+    assert normalise_sw(got) == load_golden("discovery_02.json") and len(got["cmps"]) == 13
+    assert got["dev"]["sw"] == got["o"]["sw"] == vps_lightsail.__version__
+    assert f"published discovery {DISCOVERY} (13 components)" in agent.logs()

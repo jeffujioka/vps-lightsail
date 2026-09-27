@@ -49,7 +49,7 @@ def test_once_connects_publishes_online_and_exits_0(config, monkeypatch, paho_cl
     monkeypatch.setenv("MQTT_PASSWORD", "pw-from-env")
     assert agent_main.main(["--config", config, "--once"]) == 0
     client.username_pw_set.assert_called_once_with("vps-lightsail-agent", "pw-from-env")  # env only
-    assert [p[:2] for p in published(client)] == [(AVAIL, "online"), (AVAIL, "offline")]
+    assert [p[:2] for p in published(client) if p[0] == AVAIL] == [(AVAIL, "online"), (AVAIL, "offline")]
 
 
 def test_once_without_a_broker_exits_1(config, monkeypatch, paho_client):
@@ -86,4 +86,4 @@ def test_forever_goes_online_and_exits_0_on_a_stop_signal(sig, config, monkeypat
     finally:
         for s, handler in saved.items():
             signal.signal(s, handler)
-    assert [p[1] for p in published(client)] == ["online", "offline"]
+    assert [p[1] for p in published(client) if p[0] == AVAIL] == ["online", "offline"]
