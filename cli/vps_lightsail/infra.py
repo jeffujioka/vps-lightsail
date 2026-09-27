@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .core.peers import next_free_peer_ip, parse_allowed_ips  # noqa: F401  re-exported (spec-01 §11)
+
 
 DEFAULT_REGION = "sa-east-1"
 DEFAULT_PROFILE = "personal"
@@ -239,25 +241,6 @@ def get_server_public_key(server_ip: str, key_path: Path) -> str:
         "ssh", "-i", str(key_path), "-o", "StrictHostKeyChecking=no",
         f"ubuntu@{server_ip}", "sudo cat /etc/wireguard/server_public.key",
     ])
-
-
-def parse_allowed_ips(wg_conf: str) -> set[str]:
-    """Extract peer IPs (without /32) from the AllowedIPs lines of a wg0.conf."""
-    ips = set()
-    for line in wg_conf.splitlines():
-        key, sep, value = line.partition("=")
-        if sep and key.strip() == "AllowedIPs":
-            ips.update(cidr.strip().split("/")[0] for cidr in value.split(",") if cidr.strip())
-    return ips
-
-
-def next_free_peer_ip(used: set[str]) -> str:
-    """Lowest 10.8.0.x not in use. .1 is the server."""
-    for n in range(2, 255):
-        candidate = f"10.8.0.{n}"
-        if candidate not in used:
-            return candidate
-    raise RuntimeError("No free peer IP left in 10.8.0.0/24")
 
 
 def used_peer_ips(server_ip: str, key_path: Path) -> set[str]:
