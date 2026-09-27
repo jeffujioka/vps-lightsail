@@ -15,7 +15,7 @@ from vps_lightsail.core.clock import Clock
 from vps_lightsail.core.config import AgentConfig
 from vps_lightsail.core.ledger import (LAST_HOURS, Ledger, current_instance, estimate, hour_key,
                                        merge_backfill, month_bounds, month_key)
-from vps_lightsail.core.lightsail import BundleInfo, InstanceInfo, LightsailFactory
+from vps_lightsail.core.lightsail import BundleInfo, InstanceInfo, LightsailFactory, locate_instance
 from vps_lightsail.core.pricing import overage_rate
 
 log = logging.getLogger(__name__)
@@ -48,6 +48,7 @@ class MetricsJob:
         self._region = cfg.region                    # the tracked region, reported by every successful poll
         self._info: InstanceInfo | None = None       # from the latest *successful* state poll
         self._latest_ok = False                      # did the latest state poll succeed?
+        self._polled_ok = False                      # has any state poll succeeded in this boot?
         self._bundles: dict[str, BundleInfo] = {}
         self._backfilled: set[str] = set()           # ARNs that got the 14-day backfill in this boot
 
@@ -78,6 +79,7 @@ class MetricsJob:
     def state_polled(self, region: str, info: InstanceInfo | None) -> None:
         """A successful state poll in the tracked `region` (R13); `info` None = no instance there."""
         self._region, self._info, self._latest_ok = region, info, True
+        self._polled_ok = True
 
     def state_poll_failed(self) -> None:
         """get_instance raised: keep the last known instance, never mark it destroyed (spec-02 §3.1)."""
@@ -94,6 +96,7 @@ class MetricsJob:
             log.info("ledger rollover %s -> %s", self._ledger.month, month)
             self._ledger = Ledger.empty(month)
             self._gate = _comparable(self._ledger)
+        self._scan()
         self._update_ledger(now)
         cur = current_instance(self._ledger)
         est = estimate(self._ledger, now, overage_rate(cur.region if cur else self._region))
@@ -102,6 +105,20 @@ class MetricsJob:
             self._ledger.updated_at = now
             self._publish(self._topics.ledger(month), self._ledger.to_json())
             self._gate = doc
+
+    def _scan(self) -> None:
+        """R13: while the latest successful state poll found no instance, look in every configured region
+        (one free get_instance each). A hit outside the tracked region → on_region_found (deviation 7)."""
+        if not self._polled_ok or self._info is not None:
+            return
+        try:
+            hit = locate_instance(self._factory, self._cfg.regions, self._cfg.instance_name)
+        except (ClientError, BotoCoreError) as e:
+            log.warning("region scan failed: %s", aws_code(e))
+            return
+        if hit is not None and hit[0] != self._region:
+            log.info("instance %s found in %s (tracking %s)", self._cfg.instance_name, hit[0], self._region)
+            self._on_region_found(hit[0])
 
     def _update_ledger(self, now: datetime) -> None:
         """Every AWS read first, then all ledger changes at once: an AWS error changes nothing."""

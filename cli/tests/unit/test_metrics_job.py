@@ -175,3 +175,38 @@ def test_the_ledger_is_republished_only_when_it_changed():
     job.run()
     [doc] = on(published, LEDGER)
     assert doc["updated_at"] == "2026-09-26T10:40:00Z" and doc["hours"][hour_key(h(5))] == [1, 2]
+
+
+EU = InstanceInfo("personal-vps-vpn", "arn:eu", "running", "eu-west-1",
+                  datetime(2026, 9, 25, 9, 0, tzinfo=UTC), "198.51.100.7", "nano_3_1")
+
+
+def test_scan_reports_a_hit_in_another_region():
+    job, world, _, found, _ = rig(instances={"eu-west-1": EU})
+    job.restore(None)
+    job.state_polled("sa-east-1", None)                     # the tracked region has no instance
+    job.run()
+    assert found == ["eu-west-1"] and ("get_instance", "eu-west-1") in world["calls"]
+
+
+def test_no_scan_while_an_instance_is_known():
+    job, world, _, found, _ = rig(instances={"eu-west-1": EU})
+    job.restore(None)
+    job.run()                                               # no successful state poll yet
+    job.state_polled("sa-east-1", INFO)
+    job.run()
+    job.state_poll_failed()                                 # the latest *successful* poll still found INFO
+    job.run()
+    assert found == [] and [c for c in world["calls"] if c[0] == "get_instance"] == []
+
+
+def test_a_hit_in_the_tracked_region_or_a_scan_error_changes_nothing(caplog):
+    job, world, published, found, _ = rig(instances={"sa-east-1": INFO})
+    job.restore(None)
+    job.state_polled("sa-east-1", None)                     # created since that poll: the next poll sees it
+    job.run()
+    world["fail"] = True
+    with caplog.at_level("WARNING", logger=LOGGER):
+        job.run()
+    assert found == [] and len(on(published, METRICS)) == 2        # metrics still published every cycle
+    assert "region scan failed: ThrottlingException" in caplog.text
