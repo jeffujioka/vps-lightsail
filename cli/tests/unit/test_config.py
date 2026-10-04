@@ -18,7 +18,7 @@ bundle_id: nano_3_1
 blueprint_id: ubuntu_24_04
 regions: [sa-east-1, us-east-1, us-west-2, eu-west-1, eu-central-1, ap-northeast-1]
 mqtt:
-  host: mosquitto.homelab.svc.cluster.local
+  host: mosquitto.lurdes.svc.cluster.local
   port: 1883
   username: vps-lightsail-agent
   base_topic: vps_lightsail
@@ -46,7 +46,7 @@ def test_defaults_are_the_spec01_example_plus_r5_and_r8(tmp_path):
     path.write_text(SPEC01_EXAMPLE)
     cfg = default_config()
     assert load_config(path) == cfg == parse_config({})
-    assert cfg.mqtt == MqttConfig("mosquitto.homelab.svc.cluster.local", 1883, "vps-lightsail-agent",
+    assert cfg.mqtt == MqttConfig("mosquitto.lurdes.svc.cluster.local", 1883, "vps-lightsail-agent",
                                   "vps_lightsail", "homeassistant")
     assert cfg.poll == PollConfig(60, 300, 180)                                        # R5 default grace
     assert cfg.operations == OperationsConfig(600, 600, 1200, 900, 300, 240, 5, None)  # R8
