@@ -23,7 +23,7 @@ DEFAULTS: dict = {                                # spec-01 §8.1 + R5 + R8
     # present; new instances use the region's default key pair (only if spec-01 §12 confirms D8).
     "key_pair_name": "vps-vpn-key", "bundle_id": "nano_3_1", "blueprint_id": "ubuntu_24_04",
     "regions": ["sa-east-1", "us-east-1", "us-west-2", "eu-west-1", "eu-central-1", "ap-northeast-1"],
-    "mqtt": {"host": "mosquitto.homelab.svc.cluster.local", "port": 1883, "username": "vps-lightsail-agent",
+    "mqtt": {"host": "mosquitto.lurdes.svc.cluster.local", "port": 1883, "username": "vps-lightsail-agent",
              "base_topic": "vps_lightsail", "discovery_prefix": "homeassistant"},   # username null = anonymous
     "poll": {"state_seconds": 60, "metrics_seconds": 300, "startup_grace_seconds": 180},
     "peers": [{"name": "shield", "type": "companion", "mdns_name": "ShieldVPN"}, {"name": "iphone", "type": "qr"}],
