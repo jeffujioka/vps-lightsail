@@ -1,0 +1,63 @@
+status:
+  - type: custom:bubble-card
+    card_type: button
+    button_type: state
+    entity: sensor.vps_lightsail_state
+    name: VPN
+    card_layout: large
+    state_content: [state, last-changed]
+    sub_button:
+      - {entity: sensor.vps_lightsail_ip, icon: mdi:ip-network, state_content: state, show_background: false}
+      - {entity: sensor.vps_lightsail_region, icon: mdi:earth, state_content: state, show_background: false}
+    styles: |
+      ${(() => {
+        const W = 'var(--warning-color)', D = 'var(--disabled-color)', E = 'var(--error-color)';
+        const m = {healthy: ['mdi:shield-check', 'var(--success-color)'],
+          starting: ['mdi:progress-clock', W], creating: ['mdi:progress-clock', W],
+          provisioning: ['mdi:progress-clock', W], wg_down: ['mdi:shield-alert', W],
+          unreachable: ['mdi:shield-off', E], error: ['mdi:shield-off', E],
+          stopping: ['mdi:power-sleep', D], stopped: ['mdi:power-sleep', D],
+          destroying: ['mdi:delete-clock', D], nonexistent: ['mdi:cloud-off-outline', D],
+          unavailable: ['mdi:lan-disconnect', E]};
+        const [i, c] = m[state] || ['mdi:help-circle', D];
+        icon.setAttribute('icon', i);
+        return `.bubble-icon { color: ${c} !important; }`;
+      })()}
+  - type: conditional
+    conditions: [{condition: state, entity: binary_sensor.vps_lightsail_problem, state: "on"}]
+    card:
+      type: markdown
+      content: >-
+        **Problem:** {{ states('sensor.vps_lightsail_state') }}
+        {%- set e = state_attr('sensor.vps_lightsail_state', 'error') %}{% if e %} — {{ e }}{% endif %}
+        · since {{ state_attr('sensor.vps_lightsail_state', 'since') }}
+controls: []        # SLOT spec-05 (Start/Stop, last result) and spec-06 (Create/Destroy, region, Shield)
+usage:
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      - {type: custom:bubble-card, card_type: button, button_type: state,
+         entity: sensor.vps_lightsail_data_total, name: Data this month, icon: mdi:swap-vertical}
+      - {type: custom:bubble-card, card_type: button, button_type: state,
+         entity: sensor.vps_lightsail_allowance_pct, name: Allowance used, icon: mdi:gauge}
+      - {type: custom:bubble-card, card_type: button, button_type: state,
+         entity: sensor.vps_lightsail_cost_month, name: Cost month (est.), icon: mdi:currency-usd}
+      - {type: custom:bubble-card, card_type: button, button_type: state,
+         entity: sensor.vps_lightsail_cost_projected, name: Projected (est.), icon: mdi:chart-line}
+peers:
+  - type: custom:bubble-card
+    card_type: separator
+    name: Peers
+    icon: mdi:account-network
+    sub_button:
+      - {entity: sensor.vps_lightsail_peers_connected, state_content: state, show_background: false}
+  - type: grid
+    columns: 2
+    square: false
+    cards:
+      - {type: custom:bubble-card, card_type: button, button_type: state,
+         entity: binary_sensor.vps_lightsail_peer_shield, name: Shield, icon: mdi:television}
+      - {type: custom:bubble-card, card_type: button, button_type: state,
+         entity: binary_sensor.vps_lightsail_peer_iphone, name: iPhone, icon: mdi:cellphone}
+qr: []              # SLOT spec-06 (one picture-entity per `qr` peer)

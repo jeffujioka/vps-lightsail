@@ -1,0 +1,16 @@
+dashboard:                 # args of lovelace/dashboards/create
+  url_path: vpn
+  allow_single_word: true  # HA needs a hyphen otherwise (verified in lovelace/const.py)
+  title: VPN
+  icon: mdi:vpn
+  show_in_sidebar: true
+  require_admin: false
+  mode: storage
+config:                    # args of lovelace/config/save
+  title: VPN
+  views:
+    - title: VPN
+      path: vpn
+      icon: mdi:vpn
+      max_columns: 1
+      cards: []            # filled with status + controls + usage + peers + qr
