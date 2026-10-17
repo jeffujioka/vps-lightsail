@@ -154,3 +154,174 @@ def home_target(config: dict, entry: list[dict] | None, popup: dict | None) -> d
     cards = view.get("cards", [])
     view["cards"] = strip_markers(cards) if entry is None else insert_home(cards, entry, popup)
     return out
+
+
+class HAError(Exception):
+    """WS failure, `success: false` result or rejected token (exit 2)."""
+
+
+class HAClient:
+    """HA WebSocket API: `await ha.call(type, **data)` returns `result` or raises HAError."""
+
+    def __init__(self, url: str, token: str):
+        self.url, self._token, self._id = url.rstrip("/").replace("http", "ws", 1) + "/api/websocket", token, 0
+
+    async def __aenter__(self) -> "HAClient":
+        import aiohttp  # lazy: unit tests never open a socket
+        self._session = aiohttp.ClientSession()
+        self._ws = await self._session.ws_connect(self.url, max_msg_size=0)
+        await self._ws.receive_json()                                   # auth_required
+        await self._ws.send_json({"type": "auth", "access_token": self._token})
+        if (await self._ws.receive_json()).get("type") != "auth_ok":
+            raise HAError("auth rejected")
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        await self._ws.close()
+        await self._session.close()
+
+    async def call(self, type_: str, **data) -> object:
+        self._id += 1
+        await self._ws.send_json({"id": self._id, "type": type_, **data})
+        while (msg := await self._ws.receive_json()).get("id") != self._id:
+            pass
+        if not msg.get("success"):
+            err = msg.get("error") or {}
+            raise HAError(f"{type_}: {err.get('code')}: {err.get('message')}")
+        return msg.get("result")
+
+
+async def current(ha) -> tuple[dict | None, dict | None, dict]:
+    """(the `vpn` dashboard item or None, its config or None, the home-dashboard config)."""
+    item = next((d for d in await ha.call("lovelace/dashboards/list") if d.get("url_path") == VPN_URL), None)
+    configs = []
+    for url in (VPN_URL, HOME_URL):
+        try:
+            configs.append(await ha.call("lovelace/config", url_path=url) if item or url == HOME_URL else None)
+        except HAError as e:
+            if "config_not_found" not in str(e):
+                raise
+            configs.append(None)
+    return item, configs[0], configs[1]
+
+
+def targets(peers=None) -> tuple[dict, dict, list[dict], dict]:
+    """(dashboard shell, vpn config, home entry, pop-up) composed from the three YAML files."""
+    import yaml  # lazy: the Mac relay starts without PyYAML
+    shell, home, cards = (yaml.safe_load((HERE / n).read_text())
+                          for n in ("vpn-dashboard.yaml", "home-card.yaml", "vpn-cards.yaml"))
+    sections = with_peers(cards, peers)
+    return shell, dashboard_config(shell, sections), home_entry(home, sections), popup_card(home, sections)
+
+
+def _diff(name: str, old: object, new: object) -> str:
+    import yaml
+    a, b = (yaml.safe_dump(o, sort_keys=False, allow_unicode=True).splitlines(True) for o in (old, new))
+    return "".join(difflib.unified_diff(a, b, f"{name} (HA)", f"{name} (target)"))
+
+
+async def check(ha, peers=None) -> tuple[int, str]:
+    """(0, "") when HA already equals the target, else (1, planned diff)."""
+    _, vpn_t, entry, popup = targets(peers)
+    item, vpn, home = await current(ha)
+    text = ("" if item else f"+ dashboard {VPN_URL} (create)\n") + _diff(VPN_URL, vpn, vpn_t) \
+        + _diff(HOME_URL, home, home_target(home, entry, popup))
+    return (1 if text else 0), text
+
+
+async def apply(ha, backup, peers=None) -> int:
+    """spec-02 §8.6 --apply: backup, create `vpn` if missing, save both, re-read and compare."""
+    shell, vpn_t, entry, popup = targets(peers)
+    item, vpn, home = await current(ha)
+    backup({VPN_URL: vpn, HOME_URL: home})
+    if item is None:
+        await ha.call("lovelace/dashboards/create", **shell["dashboard"])
+    home_t = home_target(home, entry, popup)
+    await ha.call("lovelace/config/save", url_path=VPN_URL, config=vpn_t)
+    await ha.call("lovelace/config/save", url_path=HOME_URL, config=home_t)
+    if (await current(ha))[1:] != (vpn_t, home_t):
+        raise HAError("re-read differs from the target")
+    return 0
+
+
+async def remove(ha, backup) -> int:
+    """--remove: backup, strip the home markers, delete the `vpn` dashboard."""
+    item, vpn, home = await current(ha)
+    backup({VPN_URL: vpn, HOME_URL: home})
+    await ha.call("lovelace/config/save", url_path=HOME_URL, config=home_target(home, None, None))
+    if item is not None:
+        await ha.call("lovelace/dashboards/delete", dashboard_id=item["id"])
+    return 0
+
+
+async def restore(ha, dump: Path) -> int:
+    """--restore DUMP: save a dump back; `config: null` deletes that config."""
+    doc = json.loads(dump.read_text())
+    if doc["config"] is None:
+        await ha.call("lovelace/config/delete", url_path=doc["url_path"])
+    else:
+        await ha.call("lovelace/config/save", url_path=doc["url_path"], config=doc["config"])
+    return 0
+
+
+def make_backup(storage: Path, dump_root: Path, run=subprocess.run):
+    """spec-02 §8.6 step 1: WS dumps under dump_root/<ts>/, then `sudo -n cp -p` of each .storage file."""
+    def backup(dumps: dict) -> None:
+        ts = dt.datetime.now().strftime("%Y%m%d%H%M%S")
+        (out := dump_root / ts).mkdir(parents=True, exist_ok=True)
+        for url, config in dumps.items():
+            (out / f"{url}.json").write_text(json.dumps({"url_path": url, "config": config}, indent=1))
+        for key in ("lovelace.home_dashboard", "lovelace.vpn", "lovelace_dashboards"):
+            src = f"{storage}/{key}"
+            if run(["sudo", "-n", "test", "-e", src]).returncode == 0:
+                run(["sudo", "-n", "cp", "-p", src, f"{src}.backup.{ts}"], check=True)
+        print(f"backup {ts}: dumps in {out}, .storage copies *.backup.{ts}")
+    return backup
+
+
+def relay(argv: list[str], run=None) -> int:
+    """On the Mac (no token file): run this script on jeff, so the token never leaves jeff."""
+    if os.environ.get("VPS_LIGHTSAIL_RELAYED"):
+        raise HAError("token file missing on jeff")
+    cmd = ("cd ~/projects/guicheffer/vps-lightsail/homeassistant/dashboards && VPS_LIGHTSAIL_RELAYED=1 "
+           "~/.local/bin/uv run -q --script apply_dashboard.py " + " ".join(map(shlex.quote, argv)))
+    host = os.environ.get("VPS_LIGHTSAIL_HOST", "jeff")
+    return (run or subprocess.run)(["ssh", "-o", "BatchMode=yes", host, cmd]).returncode
+
+
+async def run_mode(args, peers, client) -> int:
+    backup = make_backup(args.storage_dir, Path("/tmp/vps-lightsail-dashboard"))
+    async with client as ha:
+        if args.check:
+            code, text = await check(ha, peers)
+            print(text or "no changes")
+            return code
+        if args.apply:
+            return await apply(ha, backup, peers)
+        return await remove(ha, backup) if args.remove else await restore(ha, args.restore)
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description="Compose/apply the VPN dashboard (spec-02 §8.6).")
+    mode = p.add_mutually_exclusive_group(required=True)
+    for flag in ("--check", "--apply", "--remove"):
+        mode.add_argument(flag, action="store_true")
+    mode.add_argument("--restore", type=Path, metavar="DUMP")
+    p.add_argument("--peers", help="NAME:TYPE[:LABEL],... with TYPE companion|qr")
+    p.add_argument("--storage-dir", type=Path, default=Path("/home/lurdes/.local/share/lurdes/homeassistant/.storage"))
+    argv = sys.argv[1:] if argv is None else argv
+    args = p.parse_args(argv)
+    try:
+        peers = parse_peers(args.peers) if args.peers else None
+        token_file = Path(os.environ.get("HA_TOKEN_FILE", "~/.config/lurdes/.api-token")).expanduser()
+        if not token_file.exists() and "HA_URL" not in os.environ:
+            return relay(argv)
+        client = HAClient(os.environ.get("HA_URL", "http://127.0.0.1:8123"), token_file.read_text().strip())
+        return asyncio.run(run_mode(args, peers, client))
+    except Exception as e:  # WS, auth, save or input error; config/save replaces whole configs
+        print(f"ERROR {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
