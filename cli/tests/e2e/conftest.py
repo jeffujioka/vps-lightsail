@@ -342,3 +342,74 @@ class FakeWorld:
 @pytest.fixture
 def fake_world(tmp_path) -> FakeWorld:
     return FakeWorld(tmp_path / "world")
+
+
+# --- plan 05a2: authenticated broker (spec-03 §8.3, spec-05 §8.3, index §5.5) ----------------------
+TEST_PASSWORDS = {"homeassistant": "test-homeassistant", "vps-lightsail-agent": "test-vps-lightsail-agent",
+                  "ring-mqtt": "test-ring-mqtt", "e2e-observer": "test-e2e-observer"}
+AGENT_USER = "vps-lightsail-agent"
+
+
+class AuthClient:
+    """A connected paho client for one test user; what `mqtt_as(user)` returns (index §5.5)."""
+
+    def __init__(self, broker: Broker, user: str) -> None:
+        connected, self.user = threading.Event(), user
+        c = self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, protocol=mqtt.MQTTv311,
+                                      client_id=f"e2e-{user}-{os.getpid()}-{next(_ids)}")
+        c.username_pw_set(user, TEST_PASSWORDS[user])
+        c.on_connect = lambda _c, _u, _f, rc, _p: None if rc.is_failure else connected.set()
+        c.connect(broker.host, broker.port, keepalive=30)
+        c.loop_start()
+        assert connected.wait(10), f"{user}: no successful CONNACK from {broker}"
+
+    def publish(self, topic: str, payload: bytes | str, retain: bool = False, qos: int = 1) -> None:
+        self.client.publish(topic, payload, qos=qos, retain=retain).wait_for_publish(5.0)
+
+    def press(self, action: str) -> None:           # exactly what an HA MQTT button sends
+        self.publish(f"vps_lightsail/cmd/{action}", "PRESS", qos=1)
+
+    def close(self) -> None:
+        self.client.disconnect()
+        self.client.loop_stop()
+
+
+@pytest.fixture(scope="session")
+def broker_auth() -> Iterator[Broker]:
+    broker, container = start_broker("auth.conf")
+    yield broker
+    stop_broker(container)
+
+
+@pytest.fixture
+def clean_broker_auth(broker_auth: Broker) -> Broker:
+    """No retained message the agent owns (a leftover cmd/result would reach recover() at boot)."""
+    reset_retained(broker_auth, ("vps_lightsail/#", "homeassistant/device/vps_lightsail/config"),
+                   username=AGENT_USER, password=TEST_PASSWORDS[AGENT_USER])
+    return broker_auth
+
+
+@pytest.fixture
+def mqtt_as(broker_auth: Broker) -> Iterator[Callable[[str], AuthClient]]:
+    made: list[AuthClient] = []
+
+    def make(user: str) -> AuthClient:
+        made.append(AuthClient(broker_auth, user))
+        return made[-1]
+    yield make
+    for client in made:
+        client.close()
+
+
+@pytest.fixture
+def agent_authed(clean_broker_auth: Broker, fake_world: FakeWorld, tmp_path: Path) -> Iterator[AgentRunner]:
+    """spec-05 §8.3: the agent as vps-lightsail-agent; Shield (companion) + iPhone (qr); short operations."""
+    runner = AgentRunner(clean_broker_auth, tmp_path, fake_dir=fake_world.dir,
+                         env={"MQTT_PASSWORD": TEST_PASSWORDS[AGENT_USER]},
+                         config={"mqtt": {"username": AGENT_USER},
+                                 "peers": [{"name": "shield", "type": "companion", "mdns_name": "ShieldVPN"},
+                                           {"name": "iphone", "type": "qr"}],
+                                 "operations": {"aws_state_seconds": 15, "health_seconds": 8,
+                                                "companion_scan_seconds": 1, "poll_seconds": 1}})
+    yield runner
+    runner.close()
