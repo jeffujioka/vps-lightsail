@@ -177,3 +177,111 @@ def test_separator_without_the_vpn_button_is_kept():
 def test_home_view_prefers_the_home_path():
     config = {"views": [{"path": "other", "cards": []}, {"path": "home", "cards": []}]}
     assert ad.home_view(config) is config["views"][1]
+
+
+import subprocess  # noqa: E402
+
+
+class FakeHA:
+    """In-memory HA with HAClient's `call`; `log` records (type, url_path) of every call."""
+
+    def __init__(self, home, log=None):
+        self.dashboards, self.configs = [], {"home-dashboard": home}
+        self.log = [] if log is None else log
+
+    async def call(self, type_, **data):
+        self.log.append((type_, data.get("url_path")))
+        if type_ == "lovelace/dashboards/list":
+            return copy.deepcopy(self.dashboards)
+        if type_ == "lovelace/dashboards/create":
+            assert data.pop("allow_single_word") is True and data["mode"] == "storage"
+            self.dashboards.append({"id": data["url_path"], **data})
+        elif type_ == "lovelace/dashboards/delete":
+            self.dashboards = [d for d in self.dashboards if d["id"] != data["dashboard_id"]]
+            self.configs.pop(data["dashboard_id"], None)
+        elif type_ == "lovelace/config":
+            if data["url_path"] not in self.configs:
+                raise ad.HAError("lovelace/config: config_not_found: No config found.")
+            return copy.deepcopy(self.configs[data["url_path"]])
+        elif type_ == "lovelace/config/save":
+            self.configs[data["url_path"]] = copy.deepcopy(data["config"])
+        elif type_ == "lovelace/config/delete":
+            self.configs.pop(data["url_path"])
+        else:
+            raise AssertionError(f"unexpected call {type_}")
+
+
+def no_backup(dumps):
+    pass
+
+
+def test_check_reports_pending_changes_before_apply():
+    code, text = asyncio.run(ad.check(FakeHA(real_like_home())))
+    assert code == 1 and text.startswith("+ dashboard vpn (create)") and "hash: '#vpn'" in text
+
+
+def test_apply_backs_up_before_the_first_save():
+    log = []
+    ha = FakeHA(real_like_home(), log)
+    assert asyncio.run(ad.apply(ha, lambda dumps: log.append(("backup", sorted(dumps))))) == 0
+    kinds = [k for k, _ in log]
+    assert kinds.index("backup") < kinds.index("lovelace/dashboards/create") < kinds.index("lovelace/config/save")
+    assert ("backup", ["home-dashboard", "vpn"]) in log
+
+
+def test_second_apply_is_a_no_op():
+    ha = FakeHA(real_like_home())
+    asyncio.run(ad.apply(ha, no_backup))
+    saved = copy.deepcopy(ha.configs)
+    assert asyncio.run(ad.check(ha)) == (0, "")
+    asyncio.run(ad.apply(ha, no_backup))
+    assert ha.configs == saved and [d["url_path"] for d in ha.dashboards] == ["vpn"]
+
+
+def test_remove_flow_restores_home_and_deletes_vpn():
+    original = real_like_home()
+    ha = FakeHA(copy.deepcopy(original))
+    asyncio.run(ad.apply(ha, no_backup))
+    assert asyncio.run(ad.remove(ha, no_backup)) == 0
+    assert ha.configs == {"home-dashboard": original} and ha.dashboards == []
+
+
+def test_restore_saves_a_dump_back_and_null_deletes(tmp_path):
+    ha = FakeHA(real_like_home())
+    for url, config in (("home-dashboard", {"views": []}), ("vpn", {"views": [{}]}), ("vpn", None)):
+        (tmp_path / "d.json").write_text(json.dumps({"url_path": url, "config": config}))
+        assert asyncio.run(ad.restore(ha, tmp_path / "d.json")) == 0
+    assert ha.configs == {"home-dashboard": {"views": []}}
+
+
+def test_backup_uses_sudo_cp_for_existing_storage_files_and_writes_dumps(tmp_path):
+    argv = []
+
+    def fake_run(cmd, check=False):
+        argv.append(cmd)
+        return subprocess.CompletedProcess(cmd, 1 if cmd[-1].endswith("lovelace.vpn") else 0)
+
+    ad.make_backup(Path("/st"), tmp_path, run=fake_run)({"vpn": None, "home-dashboard": {"views": []}})
+    cps = [c for c in argv if c[2] == "cp"]
+    assert [c[4] for c in cps] == ["/st/lovelace.home_dashboard", "/st/lovelace_dashboards"]
+    assert all(c[:4] == ["sudo", "-n", "cp", "-p"] and c[5].startswith(c[4] + ".backup.") for c in cps)
+    (dump_dir,) = tmp_path.iterdir()
+    assert json.loads((dump_dir / "vpn.json").read_text()) == {"url_path": "vpn", "config": None}
+
+
+def test_mac_relays_to_jeff_without_the_token_file(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setenv("HA_TOKEN_FILE", str(tmp_path / "absent"))
+    for var in ("HA_URL", "VPS_LIGHTSAIL_RELAYED", "VPS_LIGHTSAIL_HOST"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(subprocess, "run", lambda cmd: calls.append(cmd) or subprocess.CompletedProcess(cmd, 1))
+    assert ad.main(["--check", "--peers", "shield:companion"]) == 1
+    (cmd,) = calls
+    assert cmd[:4] == ["ssh", "-o", "BatchMode=yes", "jeff"] and cmd[4].endswith(
+        "VPS_LIGHTSAIL_RELAYED=1 ~/.local/bin/uv run -q --script apply_dashboard.py --check --peers shield:companion")
+
+
+def test_main_exits_2_when_the_token_is_missing_on_jeff(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HA_TOKEN_FILE", str(tmp_path / "absent"))
+    monkeypatch.setenv("VPS_LIGHTSAIL_RELAYED", "1")
+    assert ad.main(["--check"]) == 2 and "token file missing on jeff" in capsys.readouterr().err
