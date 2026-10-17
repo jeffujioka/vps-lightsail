@@ -109,3 +109,48 @@ def dashboard_config(shell: dict, sections: dict) -> dict:
     config = copy.deepcopy(shell["config"])
     config["views"][0]["cards"] = compose(sections, "dashboard")
     return config
+
+
+def _nav(card: dict) -> object:
+    return (card.get("tap_action") or {}).get("navigation_path")
+
+
+def is_vpn_button(card: dict) -> bool:
+    return card.get("entity") == STATE_ENTITY and _nav(card) == "#vpn"
+
+
+def is_vpn_popup(card: dict) -> bool:
+    return card.get("card_type") == "pop-up" and card.get("hash") == "#vpn"
+
+
+def is_entry_separator(cards: list[dict], i: int) -> bool:
+    c = cards[i]
+    return (c.get("card_type") == "separator" and c.get("name") == "VPN"
+            and i + 1 < len(cards) and is_vpn_button(cards[i + 1]))
+
+
+def strip_markers(cards: list[dict]) -> list[dict]:
+    """Drop the home entry (separator + button) and the #vpn pop-up; keep every other card."""
+    return [copy.deepcopy(c) for i, c in enumerate(cards)
+            if not (is_vpn_button(c) or is_vpn_popup(c) or is_entry_separator(cards, i))]
+
+
+def insert_home(cards: list[dict], entry: list[dict], popup: dict) -> list[dict]:
+    """Old markers out; the entry right after the k3s grid (fallback: the end); the pop-up last."""
+    out = strip_markers(cards)
+    at = next((i + 1 for i, c in enumerate(out) if K3S_ENTITY in json.dumps(c)), len(out))
+    return out[:at] + copy.deepcopy(entry) + out[at:] + [copy.deepcopy(popup)]
+
+
+def home_view(config: dict) -> dict:
+    """The view that holds the entry: the one with path `home`, else the first."""
+    return next((v for v in config["views"] if v.get("path") == HOME_VIEW_PATH), config["views"][0])
+
+
+def home_target(config: dict, entry: list[dict] | None, popup: dict | None) -> dict:
+    """The home config with the markers applied, or removed when entry is None."""
+    out = copy.deepcopy(config)
+    view = home_view(out)
+    cards = view.get("cards", [])
+    view["cards"] = strip_markers(cards) if entry is None else insert_home(cards, entry, popup)
+    return out

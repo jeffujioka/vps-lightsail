@@ -124,3 +124,56 @@ def test_peers_regeneration_reproduces_the_static_grid_and_follows_the_config():
 def test_parse_peers_rejects_bad_values(bad):
     with pytest.raises(ad.InputError, match="--peers"):
         ad.parse_peers(bad)
+
+
+def real_like_home():
+    """Shape of jeff's lovelace.home_dashboard (2026-09-27): 12 cards, k3s grid at 10, remote at 11."""
+    cards = [{"type": "custom:bubble-card", "card_type": "separator", "title": f"S{i}"} if i % 2 == 0
+             else {"type": "grid", "cards": [{"entity": f"light.l{i}"}]} for i in range(10)]
+    cards += [{"type": "grid", "columns": 2, "cards": [{"entity": "binary_sensor.k3s_status"}]},
+              {"type": "custom:universal-remote-card"}]
+    return {"views": [{"title": "Home", "path": "home", "icon": "mdi:home", "cards": cards}]}
+
+
+def entry_and_popup():
+    home, sections = load("home-card.yaml"), load("vpn-cards.yaml")
+    return ad.home_entry(home, sections), ad.popup_card(home, sections)
+
+
+def test_insert_home_puts_the_entry_after_the_k3s_grid_and_the_popup_last():
+    entry, popup = entry_and_popup()
+    cards = ad.home_target(real_like_home(), entry, popup)["views"][0]["cards"]
+    assert len(cards) == 15 and ad.K3S_ENTITY in json.dumps(cards[10]) and cards[11:13] == entry
+    assert cards[13]["type"] == "custom:universal-remote-card" and ad.is_vpn_popup(cards[14])
+
+
+def test_insert_home_falls_back_to_append_without_the_k3s_grid():
+    entry, popup = entry_and_popup()
+    base = real_like_home()
+    del base["views"][0]["cards"][10]
+    cards = ad.home_target(base, entry, popup)["views"][0]["cards"]
+    assert len(cards) == 14 and cards[-3:-1] == entry and ad.is_vpn_popup(cards[-1])
+
+
+def test_insert_home_is_idempotent():
+    entry, popup = entry_and_popup()
+    once = ad.home_target(real_like_home(), entry, popup)
+    assert ad.home_target(once, entry, popup) == once
+
+
+def test_strip_markers_restores_the_original_cards():
+    entry, popup = entry_and_popup()
+    original = real_like_home()
+    assert ad.home_target(ad.home_target(original, entry, popup), None, None) == original
+
+
+def test_separator_without_the_vpn_button_is_kept():
+    lonely = {"type": "custom:bubble-card", "card_type": "separator", "name": "VPN"}
+    other = {"type": "custom:bubble-card", "entity": "sensor.vps_lightsail_state",
+             "tap_action": {"action": "navigate", "navigation_path": "/vpn"}}
+    assert ad.strip_markers([lonely, other]) == [lonely, other]
+
+
+def test_home_view_prefers_the_home_path():
+    config = {"views": [{"path": "other", "cards": []}, {"path": "home", "cards": []}]}
+    assert ad.home_view(config) is config["views"][1]
