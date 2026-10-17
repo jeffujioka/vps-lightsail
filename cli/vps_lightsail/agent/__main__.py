@@ -26,9 +26,11 @@ from vps_lightsail.agent.mqtt import MqttConnection
 from vps_lightsail.agent.runtime import Agent
 from vps_lightsail.core import operations
 from vps_lightsail.core.clock import SYSTEM_CLOCK, Clock
+from vps_lightsail.core.companions import disconnect_companions
 from vps_lightsail.core.config import AgentConfig, ConfigError, load_config
 from vps_lightsail.core.lightsail import locate_instance
 from vps_lightsail.core.operations import OperationFailed, OpOutcome, ProgressFn, Timeouts, aws_error_code
+from vps_lightsail.discovery import Device
 
 log = logging.getLogger("vps_lightsail.agent")
 
@@ -124,6 +126,35 @@ def start_command(cfg: AgentConfig, clients: Clients, *, clock: Clock = SYSTEM_C
     return Command("start", "start", "start", handler, timeout_s=cfg.operations.start_timeout_seconds)
 
 
+def companion_scan(clients: Clients) -> Callable[[], list[Device]]:
+    """clients.scan, where a failing mDNS scan counts as 'no device' so a companion problem never
+    aborts a stop (spec-05 §3.3). Only the exception type is logged."""
+    def scan() -> list[Device]:
+        try:
+            return clients.scan()
+        except Exception as e:                  # Zeroconf / OS errors on the host network
+            logging.getLogger(__name__).warning("companion scan failed: %s", type(e).__name__)
+            return []
+    return scan
+
+
+def stop_command(cfg: AgentConfig, clients: Clients, *, clock: Clock = SYSTEM_CLOCK) -> Command:
+    """spec-05 §2.2 `stop`: companions first (§4), in the region where the instance lives (index R13),
+    else cfg.region; hard cap = operations.stop_timeout_seconds (index R8)."""
+    def handler(progress: ProgressFn) -> OpOutcome:
+        try:
+            hit = locate_instance(clients.factory, cfg.regions, cfg.instance_name)
+        except (ClientError, BotoCoreError) as e:                         # index R9
+            raise OperationFailed(f"aws error: {aws_error_code(e)}") from e
+        region = hit[0] if hit else cfg.region
+        return operations.stop(
+            clients.factory(region), cfg.instance_name, progress,
+            before_stop=lambda: disconnect_companions(list(cfg.peers), scan=companion_scan(clients),
+                                                      on_progress=progress),
+            timeouts=Timeouts.from_config(cfg.operations), clock=clock)
+    return Command("stop", "stop", "stop", handler, timeout_s=cfg.operations.stop_timeout_seconds)
+
+
 def build_command_runner(cfg: AgentConfig, clients: Clients, conn: MqttConnection,
                          request_refresh: Callable[[], None]) -> CommandRunner:
     """spec-05 §2: results retained QoS 1 on BASE/cmd/result; a retained command is cleared (rule 2)."""
@@ -132,6 +163,7 @@ def build_command_runner(cfg: AgentConfig, clients: Clients, conn: MqttConnectio
                            request_refresh, cmd_prefix=topics.cmd_filter.removesuffix("#"),
                            clear_retained=lambda topic: conn.publish(topic, b"", retain=True, qos=1))
     runner.register(start_command(cfg, clients))
+    runner.register(stop_command(cfg, clients))
     return runner
 
 

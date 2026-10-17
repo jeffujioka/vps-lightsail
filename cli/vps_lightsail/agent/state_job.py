@@ -25,8 +25,9 @@ MISCONFIGURED = frozenset({"NoCredentialsError", "AccessDenied", "AccessDeniedEx
 
 
 def should_probe(aws_state: str | None, ops: OpSnapshot) -> bool:
-    """index §5.4: 05b adds `and ops.operation != "stop"`, 06b the provisioning clause."""
-    return aws_state == "running"
+    """Probe only a running instance, and never while a stop is in flight: the instance is going
+    away and the probe would only time out (spec-05 §2.6; index §5.4)."""
+    return aws_state == "running" and ops.operation != "stop"
 
 
 def _code(e: Exception) -> str:
