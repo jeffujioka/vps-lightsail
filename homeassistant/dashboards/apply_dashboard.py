@@ -88,11 +88,17 @@ def with_peers(sections: dict, peers: list[tuple[str, str, str]] | None) -> dict
 
 
 def home_entry(home: dict, sections: dict) -> list[dict]:
-    """Separator + VPN button; the styles placeholder becomes the status card's template."""
+    """One vertical-stack (separator + VPN button); the styles placeholder becomes the status template."""
     entry = copy.deepcopy(home["entry"])
-    for card in entry:
+
+    def fill(card: dict) -> None:
         if card.get("styles") == STYLES_PLACEHOLDER:
             card["styles"] = sections["status"][0]["styles"]
+        for inner in card.get("cards") or []:
+            fill(inner)
+
+    for card in entry:
+        fill(card)
     return entry
 
 
@@ -129,10 +135,17 @@ def is_entry_separator(cards: list[dict], i: int) -> bool:
             and i + 1 < len(cards) and is_vpn_button(cards[i + 1]))
 
 
+def is_vpn_entry_stack(card: dict) -> bool:
+    """The entry: a vertical-stack of [separator 'VPN', VPN button] (one masonry item)."""
+    inner = card.get("cards")
+    return (card.get("type") == "vertical-stack" and isinstance(inner, list) and len(inner) == 2
+            and is_entry_separator(inner, 0))
+
+
 def strip_markers(cards: list[dict]) -> list[dict]:
-    """Drop the home entry (separator + button) and the #vpn pop-up; keep every other card."""
+    """Drop the home entry (stack, or the legacy separate separator + button) and the #vpn pop-up."""
     return [copy.deepcopy(c) for i, c in enumerate(cards)
-            if not (is_vpn_button(c) or is_vpn_popup(c) or is_entry_separator(cards, i))]
+            if not (is_vpn_entry_stack(c) or is_vpn_button(c) or is_vpn_popup(c) or is_entry_separator(cards, i))]
 
 
 def insert_home(cards: list[dict], entry: list[dict], popup: dict) -> list[dict]:
