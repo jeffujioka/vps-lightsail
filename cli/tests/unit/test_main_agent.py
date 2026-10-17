@@ -10,8 +10,11 @@ def test_main_builds_the_agent_then_runs_it(tmp_path, monkeypatch):
     made = []
 
     class RecordingAgent:
-        def __init__(self, cfg, clients, conn):
+        def __init__(self, cfg, clients, conn, **kw):
             made.append((cfg, clients, conn))
+
+        def __getattr__(self, name):   # add_message_route/add_shutdown_hook/add_state_listener
+            return lambda *a, **k: None
 
         def run(self, stop_event):
             made.append(("run", isinstance(stop_event, threading.Event)))
@@ -20,6 +23,7 @@ def test_main_builds_the_agent_then_runs_it(tmp_path, monkeypatch):
     config.write_text("mqtt: {host: broker.test}\n")
     monkeypatch.setattr(agent_main, "Agent", RecordingAgent)
     monkeypatch.setattr(agent_main, "install_stop_signals", lambda stop: None)
+    monkeypatch.setattr(agent_main, "start_repair_loop", lambda *a, **k: None, raising=False)
     monkeypatch.setattr(agent_main, "_boot_observation", lambda clients, cfg: None, raising=False)
     assert agent_main.main(["--config", str(config)]) == 0
     (cfg, clients, conn), ran = made
@@ -29,7 +33,7 @@ def test_main_builds_the_agent_then_runs_it(tmp_path, monkeypatch):
 
 def test_main_source_keeps_the_statement_05a2_replaces():
     src = inspect.getsource(agent_main.main)
-    assert src.count("agent = Agent(cfg, clients, conn)") == 1
-    assert src.index("agent = Agent(cfg, clients, conn)") < src.index("agent.run(")
+    assert src.count("agent = Agent(cfg, clients, conn, ops=runner)") == 1
+    assert src.index("agent = Agent(cfg, clients, conn, ops=runner)") < src.index("agent.run(")
     assert not hasattr(agent_main, "SKELETON_SLICES") and not hasattr(agent_main, "run_forever")
     assert not hasattr(agent_main, "_boot_observation")

@@ -26,7 +26,7 @@ from vps_lightsail.core.lightsail import InstanceInfo
 
 log = logging.getLogger("vps_lightsail.agent.runtime")
 
-ENABLED_SLICES: frozenset[str] = frozenset({"02"})   # index R12: 05a {"02","05"}, 06c {"02","05","06"}
+ENABLED_SLICES: frozenset[str] = frozenset({"02", "05"})   # index R12: 05a {"02","05"}, 06c {"02","05","06"}
 HEARTBEAT = Path("/tmp/vps-lightsail/heartbeat")     # index §5.7: touched after every job
 IDLE_TICK_S = 0.25                                   # spec-02 §1.1: drain at least once per second
 STATE_JOB = "state"                                  # the job request_refresh() runs at once

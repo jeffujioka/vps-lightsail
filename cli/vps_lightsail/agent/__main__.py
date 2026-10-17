@@ -16,11 +16,19 @@ import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from botocore.exceptions import BotoCoreError, ClientError
+
 from vps_lightsail import __version__
-from vps_lightsail.agent.clients import build_clients
+from vps_lightsail.agent.clients import Clients, build_clients
+from vps_lightsail.agent.commands import Command, CommandRunner
+from vps_lightsail.agent.contract import Topics
 from vps_lightsail.agent.mqtt import MqttConnection
 from vps_lightsail.agent.runtime import Agent
+from vps_lightsail.core import operations
+from vps_lightsail.core.clock import SYSTEM_CLOCK, Clock
 from vps_lightsail.core.config import AgentConfig, ConfigError, load_config
+from vps_lightsail.core.lightsail import locate_instance
+from vps_lightsail.core.operations import OperationFailed, OpOutcome, ProgressFn, Timeouts, aws_error_code
 
 log = logging.getLogger("vps_lightsail.agent")
 
@@ -103,6 +111,37 @@ def run_once(conn: MqttConnection, connected: threading.Event) -> int:
     return EXIT_OK if ok else EXIT_FAILED
 
 
+def start_command(cfg: AgentConfig, clients: Clients, *, clock: Clock = SYSTEM_CLOCK) -> Command:
+    """spec-05 §2.2 `start`, in the region where the instance lives (index R13), else cfg.region."""
+    def handler(progress: ProgressFn) -> OpOutcome:
+        try:
+            hit = locate_instance(clients.factory, cfg.regions, cfg.instance_name)
+        except (ClientError, BotoCoreError) as e:                         # index R9
+            raise OperationFailed(f"aws error: {aws_error_code(e)}") from e
+        region = hit[0] if hit else cfg.region
+        return operations.start(clients.factory(region), clients.probe_factory(region), cfg.instance_name,
+                                progress, timeouts=Timeouts.from_config(cfg.operations), clock=clock)
+    return Command("start", "start", "start", handler, timeout_s=cfg.operations.start_timeout_seconds)
+
+
+def build_command_runner(cfg: AgentConfig, clients: Clients, conn: MqttConnection,
+                         request_refresh: Callable[[], None]) -> CommandRunner:
+    """spec-05 §2: results retained QoS 1 on BASE/cmd/result; a retained command is cleared (rule 2)."""
+    topics = conn.topics
+    runner = CommandRunner(lambda payload: conn.publish_json(topics.cmd_result, payload, retain=True, qos=1),
+                           request_refresh, cmd_prefix=topics.cmd_filter.removesuffix("#"),
+                           clear_retained=lambda topic: conn.publish(topic, b"", retain=True, qos=1))
+    runner.register(start_command(cfg, clients))
+    return runner
+
+
+def attach_command_runner(agent: Agent, runner: CommandRunner, topics: Topics) -> None:
+    """BASE/cmd/# on every (re)connect; only the first SUBACK opens the 5 s boot recovery window."""
+    agent.add_message_route(topics.cmd_filter, runner.on_message, qos=1,
+                            on_subscribed=runner.open_recovery_window)
+    agent.add_shutdown_hook(runner.shutdown)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -124,7 +163,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         conn.start()
         return run_once(conn, stop)
     install_stop_signals(stop)
-    agent = Agent(cfg, clients, conn)
+    runner = build_command_runner(cfg, clients, conn, lambda: agent.request_refresh())
+    agent = Agent(cfg, clients, conn, ops=runner)            # the runner is the Agent's OperationView (§2.6)
+    attach_command_runner(agent, runner, conn.topics)
     agent.run(stop)                              # starts the connection; returns after "offline"
     return EXIT_OK
 
