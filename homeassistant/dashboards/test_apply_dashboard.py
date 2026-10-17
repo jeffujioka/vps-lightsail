@@ -52,3 +52,75 @@ def test_home_card_has_entry_popup_footer_and_the_styles_placeholder():
     assert button["styles"].startswith("<same template as vpn-cards.yaml status[0]")
     assert (h["popup"]["card_type"], h["popup"]["hash"], h["popup"]["cards"]) == ("pop-up", "#vpn", [])
     assert h["popup"]["footer"][0]["button_action"]["tap_action"]["navigation_path"] == "/vpn"
+
+
+import apply_dashboard as ad  # noqa: E402  (created in Task 2)
+
+SECTIONS = {"status": [{"id": "s"}], "controls": [], "usage": [{"id": "u"}],
+            "peers": [{"id": "p"}], "qr": []}
+
+
+def ids(cards):
+    return [c["id"] for c in cards]
+
+
+def test_compose_puts_base_then_target_suffix_in_canonical_order():
+    s = {"qr@popup": [{"id": "q-pop"}], "controls@dashboard": [{"id": "c-dash"}],
+         "controls": [{"id": "c"}], "status": [{"id": "s"}], "usage@popup": [{"id": "u-pop"}]}
+    assert ids(ad.compose(s, "dashboard")) == ["s", "c", "c-dash"]
+    assert ids(ad.compose(s, "popup")) == ["s", "c", "u-pop", "q-pop"]
+
+
+def test_compose_of_the_shipped_file_skips_the_empty_slots():
+    cards = ad.compose(load("vpn-cards.yaml"), "dashboard")
+    assert [c["type"] for c in cards] == ["custom:bubble-card", "conditional", "grid",
+                                          "custom:bubble-card", "grid"]
+    assert ad.compose(load("vpn-cards.yaml"), "popup") == cards
+
+
+@pytest.mark.parametrize("key", ["extra", "status@", "status@phone", "@popup"])
+def test_compose_rejects_unknown_keys(key):
+    with pytest.raises(ad.InputError, match="unknown section key"):
+        ad.compose({**SECTIONS, key: []}, "dashboard")
+
+
+def test_compose_returns_copies():
+    ad.compose(SECTIONS, "popup")[0]["id"] = "changed"
+    assert SECTIONS["status"][0]["id"] == "s"
+
+
+def test_home_entry_gets_the_status_styles_template():
+    sections = load("vpn-cards.yaml")
+    sep, button = ad.home_entry(load("home-card.yaml"), sections)
+    assert button["styles"] == sections["status"][0]["styles"]
+    assert "mdi:cloud-off-outline" in button["styles"] and "styles" not in sep
+
+
+def test_popup_appends_footer_and_drops_the_key():
+    home, sections = load("home-card.yaml"), load("vpn-cards.yaml")
+    popup = ad.popup_card(home, sections)
+    assert "footer" not in popup and popup["hash"] == "#vpn"
+    assert popup["cards"] == ad.compose(sections, "popup") + home["popup"]["footer"]
+
+
+def test_dashboard_config_fills_the_single_view():
+    config = ad.dashboard_config(load("vpn-dashboard.yaml"), load("vpn-cards.yaml"))
+    assert config["title"] == "VPN"
+    assert config["views"][0]["cards"] == ad.compose(load("vpn-cards.yaml"), "dashboard")
+
+
+def test_peers_regeneration_reproduces_the_static_grid_and_follows_the_config():
+    sections = load("vpn-cards.yaml")
+    assert ad.with_peers(sections, ad.parse_peers("shield:companion,iphone:qr:iPhone")) == sections
+    three = ad.with_peers(sections, ad.parse_peers("shield:companion,iphone:qr,tablet:companion"))
+    assert [(c["entity"], c["name"], c["icon"]) for c in three["peers"][1]["cards"]] == [
+        ("binary_sensor.vps_lightsail_peer_shield", "Shield", "mdi:television"),
+        ("binary_sensor.vps_lightsail_peer_iphone", "Iphone", "mdi:cellphone"),
+        ("binary_sensor.vps_lightsail_peer_tablet", "Tablet", "mdi:television")]
+    assert three["peers"][0] == sections["peers"][0]
+
+
+@pytest.mark.parametrize("bad", ["", "shield", "shield:phone", ":qr", "a:qr:b:c", "shield:qr,"])
+def test_parse_peers_rejects_bad_values(bad):
+    with pytest.raises(ad.InputError, match="--peers"):
+        ad.parse_peers(bad)
