@@ -46,7 +46,9 @@ def test_dashboard_shell_matches_the_create_fields():
 
 def test_home_card_has_entry_popup_footer_and_the_styles_placeholder():
     h = load("home-card.yaml")
-    sep, button = h["entry"]
+    (stack,) = h["entry"]
+    assert stack["type"] == "vertical-stack"
+    sep, button = stack["cards"]
     assert (sep["card_type"], sep["name"]) == ("separator", "VPN")
     assert button["tap_action"]["navigation_path"] == "#vpn"
     assert button["styles"].startswith("<same template as vpn-cards.yaml status[0]")
@@ -91,7 +93,8 @@ def test_compose_returns_copies():
 
 def test_home_entry_gets_the_status_styles_template():
     sections = load("vpn-cards.yaml")
-    sep, button = ad.home_entry(load("home-card.yaml"), sections)
+    (stack,) = ad.home_entry(load("home-card.yaml"), sections)
+    sep, button = stack["cards"]
     assert button["styles"] == sections["status"][0]["styles"]
     assert "mdi:cloud-off-outline" in button["styles"] and "styles" not in sep
 
@@ -143,8 +146,9 @@ def entry_and_popup():
 def test_insert_home_puts_the_entry_after_the_k3s_grid_and_the_popup_last():
     entry, popup = entry_and_popup()
     cards = ad.home_target(real_like_home(), entry, popup)["views"][0]["cards"]
-    assert len(cards) == 15 and ad.K3S_ENTITY in json.dumps(cards[10]) and cards[11:13] == entry
-    assert cards[13]["type"] == "custom:universal-remote-card" and ad.is_vpn_popup(cards[14])
+    assert len(cards) == 14 and ad.K3S_ENTITY in json.dumps(cards[10]) and cards[11:12] == entry
+    assert ad.is_vpn_entry_stack(cards[11])
+    assert cards[12]["type"] == "custom:universal-remote-card" and ad.is_vpn_popup(cards[13])
 
 
 def test_insert_home_falls_back_to_append_without_the_k3s_grid():
@@ -152,7 +156,7 @@ def test_insert_home_falls_back_to_append_without_the_k3s_grid():
     base = real_like_home()
     del base["views"][0]["cards"][10]
     cards = ad.home_target(base, entry, popup)["views"][0]["cards"]
-    assert len(cards) == 14 and cards[-3:-1] == entry and ad.is_vpn_popup(cards[-1])
+    assert len(cards) == 13 and cards[-2:-1] == entry and ad.is_vpn_popup(cards[-1])
 
 
 def test_insert_home_is_idempotent():
@@ -165,6 +169,20 @@ def test_strip_markers_restores_the_original_cards():
     entry, popup = entry_and_popup()
     original = real_like_home()
     assert ad.home_target(ad.home_target(original, entry, popup), None, None) == original
+
+
+def test_apply_over_the_legacy_separate_entry_yields_one_stack_and_strip_removes_it():
+    entry, popup = entry_and_popup()
+    (stack,) = entry
+    legacy = real_like_home()
+    legacy["views"][0]["cards"][11:11] = copy.deepcopy(stack["cards"])
+    legacy["views"][0]["cards"].append(copy.deepcopy(popup))
+    assert len(legacy["views"][0]["cards"]) == 15
+    cards = ad.home_target(legacy, entry, popup)["views"][0]["cards"]
+    assert cards == ad.home_target(real_like_home(), entry, popup)["views"][0]["cards"]
+    assert len(cards) == 14 and sum(map(ad.is_vpn_entry_stack, cards)) == 1
+    assert not any(ad.is_vpn_button(c) for c in cards)
+    assert ad.home_target(ad.home_target(legacy, entry, popup), None, None) == real_like_home()
 
 
 def test_separator_without_the_vpn_button_is_kept():
