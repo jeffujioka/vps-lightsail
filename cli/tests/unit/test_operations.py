@@ -6,8 +6,9 @@ import dataclasses
 import pytest
 from botocore.exceptions import ClientError, EndpointConnectionError
 
+from vps_lightsail.core.companions import CompanionReport
 from vps_lightsail.core.config import ConfigError, default_config, parse_config
-from vps_lightsail.core.operations import OperationFailed, OperationRejected, Timeouts, aws_error_code, start
+from vps_lightsail.core.operations import OperationFailed, OperationRejected, Timeouts, aws_error_code, start, stop
 
 
 def test_timeouts_defaults_and_from_config():
@@ -128,3 +129,73 @@ def test_aws_errors_become_operation_failed():                              # R9
         run_start(["stopped"], fail={"start_instance": throttle})
     with pytest.raises(OperationFailed, match="^aws error: EndpointConnectionError$"):
         run_start(["stopped"], fail={"get_instance": EndpointConnectionError(endpoint_url="https://x")})
+
+
+REPORT = CompanionReport((("shield", "disconnected"), ("iphone", "manual")))
+SUMMARY = "shield: disconnected; iphone: turn off by hand (qr)"
+
+
+def run_stop(states, *, fail=None):
+    calls, progress = [], []
+
+    def before_stop():
+        calls.append("before_stop")
+        return REPORT
+    out = stop(StubClient(states, calls=calls, fail=fail), NAME, progress.append,
+               before_stop=before_stop, timeouts=T, clock=clock())
+    return out, calls, progress
+
+
+@pytest.mark.parametrize("state,reason", [
+    (None, "no instance 'personal-vps-vpn' in sa-east-1"),
+    ("pending", "instance is starting; stop it once it is up"),
+    ("starting", "instance is starting; stop it once it is up"),
+    ("shutting-down", "instance is being deleted"), ("terminated", "instance is being deleted"),
+    ("rebooting", "unexpected AWS state 'rebooting'")])
+def test_stop_rejects_without_touching_aws_or_companions(state, reason):     # §3.2 stop column · RF 1
+    calls = []
+    with pytest.raises(OperationRejected) as e:
+        stop(StubClient([state], calls=calls), NAME, before_stop=lambda: calls.append("before_stop"),
+             timeouts=T, clock=clock())
+    assert str(e.value) == reason and calls == ["get_instance"]
+
+
+def test_stop_disconnects_companions_before_stop_instance():                # §9 call order · RF 1
+    out, calls, progress = run_stop(["running", "stopping", "stopping", "stopped"])
+    assert calls[:3] == ["get_instance", "before_stop", "stop_instance"]
+    assert (out.message, out.details) == (f"stopped; {SUMMARY}",
+                                          {"devices": {"shield": "disconnected", "iphone": "manual"}})
+    assert progress == ["stopping instance", "aws: stopping", "aws: stopped"]
+
+
+@pytest.mark.parametrize("states,head", [(["stopped"], "already stopped"),
+                                         (["stopping", "stopping", "stopped"], "stopped")])
+def test_companion_hook_runs_on_stopping_and_already_stopped(states, head):  # §3.2 · §9 · RF 1
+    out, calls, _ = run_stop(states)
+    assert calls[:2] == ["get_instance", "before_stop"] and "stop_instance" not in calls
+    assert out.message == f"{head}; {SUMMARY}"
+
+
+def test_stop_without_a_hook_is_the_cli_path():                             # spec-05 §6.2
+    client = StubClient(["stopped"])
+    out = stop(client, NAME, timeouts=T, clock=clock())
+    assert (out.message, out.details, client.calls) == ("already stopped", {}, ["get_instance"])
+    empty = stop(StubClient(["stopped"]), NAME, before_stop=lambda: CompanionReport(()), timeouts=T, clock=clock())
+    assert (empty.message, empty.details) == ("already stopped", {"devices": {}})
+
+
+@pytest.mark.parametrize("states,message", [
+    (["running", "stopping"], "timeout: instance still 'stopping' after 30s (wanted 'stopped')"),
+    (["running", None], "instance disappeared while waiting for 'stopped'")])
+def test_stop_failures(states, message):
+    with pytest.raises(OperationFailed) as e:
+        run_stop(states)
+    assert str(e.value) == message
+
+
+def test_stop_aws_errors_become_operation_failed():                         # R9 · Review Focus 5
+    throttle = ClientError({"Error": {"Code": "ThrottlingException", "Message": "x"}}, "StopInstance")
+    with pytest.raises(OperationFailed, match="^aws error: ThrottlingException$"):
+        run_stop(["running"], fail={"stop_instance": throttle})
+    with pytest.raises(OperationFailed, match="^aws error: EndpointConnectionError$"):
+        run_stop(["running"], fail={"get_instance": EndpointConnectionError(endpoint_url="https://x")})

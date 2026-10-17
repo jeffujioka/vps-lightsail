@@ -11,6 +11,7 @@ from vps_lightsail.core.clock import SYSTEM_CLOCK, Clock
 from vps_lightsail.core.config import OperationsConfig
 
 if TYPE_CHECKING:
+    from vps_lightsail.core.companions import CompanionReport
     from vps_lightsail.core.lightsail import InstanceInfo, LightsailClient
     from vps_lightsail.core.server import ServerProbe
 
@@ -123,5 +124,41 @@ def start(client: "LightsailClient", probe: "ServerProbe", name: str,
     """spec-05 §3.3 start; botocore errors anywhere inside become OperationFailed (index R9)."""
     try:
         return _start(client, probe, name, on_progress, timeouts=timeouts, clock=clock)
+    except (ClientError, BotoCoreError) as e:
+        raise OperationFailed(f"aws error: {aws_error_code(e)}") from e
+
+
+def _stop(client: "LightsailClient", name: str,
+         on_progress: ProgressFn = lambda _m: None, *,
+         before_stop: Callable[[], "CompanionReport"] | None = None,
+         timeouts: Timeouts = Timeouts(), clock: Clock = SYSTEM_CLOCK) -> OpOutcome:
+    state, _ = _state(client, name)
+    if state is None:
+        raise OperationRejected(f"no instance '{name}' in {client.region}")
+    if state in BAD_STATES:
+        raise OperationRejected("instance is being deleted")
+    if state in ("pending", "starting"):
+        raise OperationRejected("instance is starting; stop it once it is up")
+    if state not in ("running", "stopping", "stopped"):
+        raise OperationRejected(f"unexpected AWS state '{state}'")
+    report = before_stop() if before_stop else None
+    if state == "running":
+        on_progress("stopping instance")
+        client.stop_instance(name)
+    if state != "stopped":
+        _wait_state(client, name, "stopped", timeouts, clock, on_progress)
+    head = "already stopped" if state == "stopped" else "stopped"
+    tail = f"; {report.summary()}" if report and report.summary() else ""
+    details = {"devices": report.as_dict()} if report else {}
+    return OpOutcome(head + tail, details)
+
+
+def stop(client: "LightsailClient", name: str,
+         on_progress: ProgressFn = lambda _m: None, *,
+         before_stop: Callable[[], "CompanionReport"] | None = None,
+         timeouts: Timeouts = Timeouts(), clock: Clock = SYSTEM_CLOCK) -> OpOutcome:
+    """spec-05 §3.3 stop: companions before the AWS stop; botocore errors → OperationFailed (index R9)."""
+    try:
+        return _stop(client, name, on_progress, before_stop=before_stop, timeouts=timeouts, clock=clock)
     except (ClientError, BotoCoreError) as e:
         raise OperationFailed(f"aws error: {aws_error_code(e)}") from e
