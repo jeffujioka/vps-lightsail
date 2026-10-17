@@ -1,0 +1,32 @@
+entry:                     # inserted after the system grid (the card holding binary_sensor.k3s_status)
+  - {type: custom:bubble-card, card_type: separator, name: VPN, icon: mdi:vpn}
+  - type: custom:bubble-card
+    card_type: button
+    button_type: state
+    entity: sensor.vps_lightsail_state
+    name: VPN
+    state_content: state
+    sub_button:
+      - {entity: sensor.vps_lightsail_data_total, icon: mdi:swap-vertical, state_content: state, show_background: false}
+      - {entity: sensor.vps_lightsail_peers_connected, icon: mdi:account-network, state_content: state, show_background: false}
+    tap_action: {action: navigate, navigation_path: '#vpn'}
+    button_action:
+      tap_action: {action: navigate, navigation_path: '#vpn'}
+    styles: "<same template as vpn-cards.yaml status[0]; injected by apply_dashboard.py>"
+popup:                     # appended as the LAST card of the view (pop-ups belong at the end)
+  type: custom:bubble-card
+  card_type: pop-up
+  hash: '#vpn'
+  name: VPN
+  icon: mdi:vpn
+  entity: sensor.vps_lightsail_state
+  close_by_clicking_outside: true
+  cards: []                # filled with status + controls + usage + peers + qr, then:
+  footer:                  # appended by composition
+    - type: custom:bubble-card
+      card_type: button
+      button_type: name
+      name: Open VPN dashboard
+      icon: mdi:open-in-new
+      button_action:
+        tap_action: {action: navigate, navigation_path: /vpn}
