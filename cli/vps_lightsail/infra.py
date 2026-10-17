@@ -8,8 +8,13 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .core import operations
+from .core.clock import SYSTEM_CLOCK
 from .core.lightsail import Boto3Lightsail, LightsailClient
 from .core.peers import next_free_peer_ip, parse_allowed_ips  # noqa: F401  re-exported (spec-01 §11)
+from .core.server import SshServer
+
+CLOCK = SYSTEM_CLOCK      # the clock start/stop hand to core.operations (tests use a FakeClock)
 
 
 DEFAULT_REGION = "sa-east-1"
@@ -176,38 +181,27 @@ def _server_ip(client: LightsailClient) -> str:
 
 
 def stop(region: str = DEFAULT_REGION, profile: str = DEFAULT_PROFILE) -> None:
-    """Stop the instance, keeping disk, WireGuard keys and static IP. Still billed."""
+    """Stop the instance, keeping disk, WireGuard keys and static IP. Still billed. Devices are not
+    disconnected here: `cmd_stop` does that first (index R16 moves it onto the core in 06d)."""
     client = Boto3Lightsail(region, profile)
-    if _instance_state(client) == "stopped":
-        print("▶ Instance already stopped.")
-        return
-    print("▶ Stopping instance...")
-    client.stop_instance(INSTANCE_NAME)
-    _wait_for_state(client, "stopped")
-    print("✅ Instance stopped. No client can route traffic until `start`.")
+    try:
+        out = operations.stop(client, INSTANCE_NAME, on_progress=lambda m: print(f"  {m}"), clock=CLOCK)
+    except (operations.OperationRejected, operations.OperationFailed) as e:
+        raise (TimeoutError if str(e).startswith("timeout") else RuntimeError)(str(e)) from e
+    print(f"✅ Instance {out.message}. No client can route traffic until `start`.")
 
 
 def start(region: str = DEFAULT_REGION, profile: str = DEFAULT_PROFILE) -> str:
-    """Start a stopped instance and wait until WireGuard is up. Returns server IP."""
-    key_path = Path.home() / ".ssh" / "vps-vpn.pem"
+    """Start the instance and wait until WireGuard is up, through the stateless probe (no key file).
+    Returns the instance's public IP (the static IP once attached)."""
     client = Boto3Lightsail(region, profile)
-    if _instance_state(client) != "running":
-        print("▶ Starting instance...")
-        client.start_instance(INSTANCE_NAME)
-        _wait_for_state(client, "running")
-
-    server_ip = _server_ip(client)
-    print(f"▶ Waiting for SSH on {server_ip}...")
-    _wait_for_ssh(server_ip, key_path)
-
-    wg_state = run([
-        "ssh", "-i", str(key_path), "-o", "StrictHostKeyChecking=no",
-        f"ubuntu@{server_ip}", "systemctl is-active wg-quick@wg0 || true",
-    ])
-    if wg_state != "active":
-        raise RuntimeError(f"wg-quick@wg0 is '{wg_state}' on {server_ip}")
-    print(f"✅ VPN server up: {server_ip}")
-    return server_ip
+    try:
+        out = operations.start(client, SshServer(client), INSTANCE_NAME,
+                               on_progress=lambda m: print(f"  {m}"), clock=CLOCK)
+    except (operations.OperationRejected, operations.OperationFailed) as e:
+        raise (TimeoutError if str(e).startswith("timeout") else RuntimeError)(str(e)) from e
+    print(f"✅ {out.message}")
+    return out.details["ip"]
 
 
 def get_server_public_key(server_ip: str, key_path: Path) -> str:
