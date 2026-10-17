@@ -18,6 +18,7 @@ from botocore.exceptions import ClientError
 
 from vps_lightsail.core.lightsail import AccessDetails, BundleInfo, InstanceInfo, MetricPoint
 from vps_lightsail.core.server import PeerStatus, ProbeResult
+from vps_lightsail.discovery import Device
 
 if TYPE_CHECKING:
     from vps_lightsail.core.lightsail import LightsailFactory
@@ -189,3 +190,22 @@ class FakeServer:
 def fake_factory(fake_dir: Path) -> LightsailFactory:
     """region → FakeLightsail bound to that region (index §5.2)."""
     return lambda region: FakeLightsail(Path(fake_dir) / "lightsail.json", region=region)
+
+
+DEVICES_FILE = "devices.json"                     # index R7 / spec-01 §14 M3
+
+
+class FakeDiscovery:
+    """mDNS stand-in for `--fake DIR` (index R7): re-reads PATH — a list of mDNS records
+    `{"name", "ip", "port", "token", "api"}` — on every scan; a missing file means no device on
+    the LAN. The agent never touches Zeroconf in fake mode. (06c parses `api`.)"""
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+
+    def scan(self) -> list[Device]:
+        if not self.path.exists():
+            return []
+        with locked(self.path):                   # FakeWorld.set_devices writes under the same lock
+            records = read_json(self.path)
+        return [Device(r["name"], r["ip"], int(r["port"]), r.get("token")) for r in records]

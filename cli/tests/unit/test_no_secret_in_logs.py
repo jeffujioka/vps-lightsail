@@ -38,7 +38,7 @@ def test_main_config_errors_and_every_callback_path(tmp_path, monkeypatch, caplo
     booted = []
     monkeypatch.setattr(agent_main, "build_clients", lambda cfg, fake: booted.append(True) or Clients(
         factory=lambda _region: type("StubLightsail", (), {"get_instance": lambda self, name: None})(),
-        probe_factory=lambda _region: None))
+        probe_factory=lambda _region: None, scan=lambda: []))
     factory, client = fake_paho(REFUSED, ACCEPTED)                       # refused once, then accepted
     monkeypatch.setattr(agent_main, "MqttConnection", functools.partial(MqttConnection, client_factory=factory))
     good, typo, broken = tmp_path / "good.yaml", tmp_path / "typo.yaml", tmp_path / "broken.yaml"

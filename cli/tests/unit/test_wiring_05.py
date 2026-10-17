@@ -22,7 +22,8 @@ CFG = dataclasses.replace(default_config(), region="sa-east-1", regions=("sa-eas
 
 
 def clients_for(by_region: dict) -> Clients:
-    return Clients(factory=lambda region: by_region[region], probe_factory=lambda _region: StubProbe(OK))
+    return Clients(factory=lambda region: by_region[region], probe_factory=lambda _region: StubProbe(OK),
+                   scan=lambda: [])
 
 
 def start(by_region: dict):

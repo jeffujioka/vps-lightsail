@@ -10,9 +10,10 @@ import pytest
 from botocore.exceptions import ClientError
 
 from vps_lightsail.core import fakes
-from vps_lightsail.core.fakes import FakeLightsail, FakeServer, fake_factory
+from vps_lightsail.core.fakes import DEVICES_FILE, FakeDiscovery, FakeLightsail, FakeServer, fake_factory
 from vps_lightsail.core.lightsail import BundleInfo, InstanceInfo, MetricPoint
 from vps_lightsail.core.server import PeerStatus, ProbeResult
+from vps_lightsail.discovery import Device
 
 NAME, IP, H9 = "personal-vps-vpn", "203.0.113.10", datetime(2026, 9, 26, 9, tzinfo=UTC)
 INSTANCE = {"name": NAME, "arn": "arn:fake", "state": "running", "created_at": "2026-09-26T09:00:00Z",
@@ -143,3 +144,16 @@ def test_fake_server_reports_only_what_a_real_probe_could_see(world):
     edit(world, fail={"get_access_details": {"code": "ThrottlingException", "times": 1}})
     with pytest.raises(ClientError, match="ThrottlingException"):                 # like SshServer
         server.probe(NAME)
+
+
+def test_fake_discovery_reads_devices_json_on_every_scan(tmp_path):         # index R7 · M3
+    path = tmp_path / DEVICES_FILE
+    disc = FakeDiscovery(path)
+    assert (DEVICES_FILE, disc.path, disc.scan()) == ("devices.json", path, [])          # missing → []
+    path.write_text(json.dumps([{"name": "ShieldVPN", "ip": "127.0.0.1", "port": 43121,
+                                 "token": "fake-txt-token", "api": 2}]))
+    assert disc.scan() == [Device("ShieldVPN", "127.0.0.1", 43121, "fake-txt-token")]
+    path.write_text(json.dumps([{"name": "NoToken", "ip": "127.0.0.1", "port": 1}]))
+    assert disc.scan() == [Device("NoToken", "127.0.0.1", 1, None)]
+    path.write_text("[]")
+    assert disc.scan() == []
