@@ -3,8 +3,9 @@ Handlers follow index R11: only OperationRejected / OperationFailed escape."""
 from __future__ import annotations
 
 import logging
+import os
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -48,6 +49,7 @@ class OpContext:
     materials: MaterialCache = field(default_factory=dict)          # shared by create and destroy
     after_create: Callable[[CreateResult, ProgressFn], list[str]] | None = None   # 06c3: staging + QR notes
     region_store: RegionStore | None = None           # plan 06c2 (spec-06 §6.4); None → cfg.region
+    env: Mapping[str, str] = field(default_factory=lambda: os.environ)   # PEER_<NAME>_TOKEN lookup (06c3)
 
 
 def create_region(ctx: OpContext) -> str:
