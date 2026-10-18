@@ -259,7 +259,7 @@ class SshServerAdmin(SshServer):
             return "ssh timed out"
         except OSError as e:
             return f"ssh not available: {e}"
-        return None if done.returncode == 0 else f"ssh exit {done.returncode}"
+        return None if done.returncode == 0 else f"ssh exit {done.returncode}: {_last_line(done.stderr)}"
 
     def wait_ssh(self, instance_name: str, timeout: float = 240) -> None:
         """Every SSH_WAIT_INTERVAL_S until `ssh … true` exits 0; never StrictHostKeyChecking=no."""
