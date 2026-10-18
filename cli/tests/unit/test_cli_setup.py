@@ -111,6 +111,16 @@ def test_setup_creates_prints_qr_and_activates_the_companion(world, companion, c
     assert push["path"] in ("/config", "/config?activate=true") and push["auth"] == "Bearer txt-token"
     assert "Address = 10.8.0.2/32" in push["body"] and doc(world)["instance"]["state"] == "running"
 
+def test_setup_fixes_permissions_on_an_already_existing_conf_file(world, companion, capsys):
+    Path("dist").mkdir()
+    Path("dist/iphone-vpn.conf").write_text("stale")
+    Path("dist/iphone-vpn.conf").chmod(0o644)
+    companion()
+    assert run(world, "setup") == 0
+    conf = Path("dist/iphone-vpn.conf")
+    assert stat.S_IMODE(conf.stat().st_mode) == 0o600
+    assert "Address = 10.8.0.3/32" in conf.read_text() and "stale" not in conf.read_text()
+
 def test_setup_refuses_an_existing_instance_and_force_replaces_it(world, companion, capsys):   # old #1
     assert run(world, "setup") == 0
     n = len(doc(world)["calls"])
