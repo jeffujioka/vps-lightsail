@@ -14,6 +14,7 @@ import signal
 import sys
 import threading
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from botocore.exceptions import BotoCoreError, ClientError
@@ -21,8 +22,8 @@ from botocore.exceptions import BotoCoreError, ClientError
 from vps_lightsail import __version__
 from vps_lightsail.agent.clients import Clients, build_clients
 from vps_lightsail.agent.commands import Command, CommandRunner
-from vps_lightsail.agent.commands_create import (REPAIR_TIMEOUT_S, OpContext, RepairLoop, destroy_command,
-                                                 repair_job)
+from vps_lightsail.agent.commands_create import (REPAIR_TIMEOUT_S, OpContext, RepairLoop, create_command,
+                                                 destroy_command, repair_job)
 from vps_lightsail.agent.contract import Topics
 from vps_lightsail.agent.mqtt import MqttConnection
 from vps_lightsail.agent.runtime import Agent
@@ -166,7 +167,9 @@ def build_command_runner(cfg: AgentConfig, clients: Clients, conn: MqttConnectio
                            clear_retained=lambda topic: conn.publish(topic, b"", retain=True, qos=1))
     runner.register(start_command(cfg, clients))
     runner.register(stop_command(cfg, clients))
-    runner.register(destroy_command(op_context(cfg, clients, conn)))
+    ctx = replace(op_context(cfg, clients, conn), mark_provisioned=runner.mark_provisioned)
+    runner.register(create_command(ctx))
+    runner.register(destroy_command(ctx))
     return runner
 
 
@@ -180,7 +183,8 @@ def attach_command_runner(agent: Agent, runner: CommandRunner, topics: Topics) -
 def op_context(cfg: AgentConfig, clients: Clients, conn: MqttConnection) -> OpContext:
     """The spec-06 handlers' view of the agent (06b/06c pass more fields)."""
     return OpContext(cfg, clients.factory, companion_scan(clients),
-                     lambda topic, payload: conn.publish(topic, payload, retain=True, qos=1), conn.topics)
+                     lambda topic, payload: conn.publish(topic, payload, retain=True, qos=1), conn.topics,
+                     admin_factory=clients.admin_factory)
 
 
 def start_repair_loop(agent: Agent, runner: CommandRunner, ctx: OpContext) -> RepairLoop:

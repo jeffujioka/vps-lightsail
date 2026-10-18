@@ -2,9 +2,10 @@
 Handlers follow index R11: only OperationRejected / OperationFailed escape."""
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -15,22 +16,35 @@ from vps_lightsail.core.companions import CompanionReport, disconnect_companions
 from vps_lightsail.core.config import AgentConfig
 from vps_lightsail.core.lightsail import LightsailError, LightsailFactory, locate_instance
 from vps_lightsail.core.operations import OperationFailed, OperationRejected, OpOutcome, ProgressFn, aws_error_code
-from vps_lightsail.core.provision import Orphan, destroy_flow, repair_flow
+from vps_lightsail.core.provision import CreateResult, Orphan, create_flow, destroy_flow, repair_flow
+from vps_lightsail.core.server import ClientMaterial, ServerAdmin
 from vps_lightsail.discovery import Device
+
+log = logging.getLogger(__name__)
 
 REPAIR_TIMEOUT_S = 300.0                                              # index R8: repair cap
 BOOT_REPAIR_DELAY_S, REPAIR_EVERY_S, REPAIR_RETRY_S = 10.0, 3600.0, 60.0
 
+MaterialCache = dict[str, ClientMaterial]              # spec-06 §5.1: instance ARN → material, agent memory only
+
+
+def _nothing() -> None:
+    return None
+
 
 @dataclass(frozen=True)
 class OpContext:
-    """What the spec-06 handlers need (index R11); built in agent/__main__.py. 06b/06c add fields."""
+    """What the spec-06 handlers need (index R11); built in agent/__main__.py. 06c adds fields after these."""
     cfg: AgentConfig
     factory: LightsailFactory
     scan: Callable[[], list[Device]]                   # companion mDNS scan (fake mode: devices.json)
     publish: Callable[[str, bytes], None]              # retained QoS-1 publish
     topics: Topics
     clock: Clock = SYSTEM_CLOCK
+    admin_factory: Callable[[str], ServerAdmin] | None = None       # 06b: region → ServerAdmin
+    mark_provisioned: Callable[[], None] = _nothing                 # 06b: CommandRunner.mark_provisioned
+    materials: MaterialCache = field(default_factory=dict)          # shared by create and destroy
+    after_create: Callable[[CreateResult, ProgressFn], list[str]] | None = None   # 06c3: staging + QR notes
 
 
 def _orphans_text(orphans: list[Orphan]) -> str:
@@ -53,11 +67,12 @@ def _aws_guard(fn: Callable[[], OpOutcome]) -> OpOutcome:
 
 
 def _before_delete(ctx: OpContext, progress: ProgressFn, notes: dict[str, CompanionReport]) -> None:
-    """spec-06 §6.2 hook: (a) disconnect every companion before AWS is touched, (b) clear every QR topic.
-    06b adds (c): drop the MaterialCache."""
+    """spec-06 §6.2 hook: (a) disconnect every companion before AWS is touched, (b) clear every QR topic,
+    (c) drop the MaterialCache — those keys die with the server."""
     notes["companions"] = disconnect_companions(list(ctx.cfg.peers), scan=ctx.scan, on_progress=progress)
     for peer in ctx.cfg.qr_peers():
         ctx.publish(ctx.topics.qr(peer.name), b"")              # empty retained payload clears it (§5.4)
+    ctx.materials.clear()
 
 
 def handle_destroy(ctx: OpContext, progress: ProgressFn) -> OpOutcome:
@@ -86,6 +101,41 @@ def destroy_command(ctx: OpContext) -> Command:
     """spec-06 §6.2 on the spec-05 runner; hard cap operations.destroy_timeout_seconds (index R8, M8: 900)."""
     return Command("destroy", "destroy", "destroy", lambda progress: handle_destroy(ctx, progress),
                    timeout_s=ctx.cfg.operations.destroy_timeout_seconds)
+
+
+def _cache_material(ctx: OpContext, region: str, material: ClientMaterial) -> None:
+    """MaterialCache by instance ARN (spec-06 §5.1); a failed lookup only costs 06c one SSH later."""
+    try:
+        inst = ctx.factory(region).get_instance(ctx.cfg.instance_name)
+    except (LightsailError, ClientError, BotoCoreError) as e:
+        log.warning("instance lookup after create failed (%s): material not cached", type(e).__name__)
+        return
+    if inst is not None:
+        ctx.materials.clear()                                   # one instance at a time (D10)
+        ctx.materials[inst.arn] = material
+
+
+def handle_create(ctx: OpContext, progress: ProgressFn) -> OpOutcome:
+    """spec-06 §6.1 under index R11. 06b publishes no QR and pushes nothing to companions: 06c plugs both
+    into ctx.after_create. --force does not exist here: an existing instance is rejected, never deleted."""
+    region = ctx.cfg.region                                     # 06c2: create_region(ctx)
+
+    def run() -> OpOutcome:
+        if ctx.admin_factory is None:
+            raise OperationFailed("create unavailable: no server admin configured")
+        result = create_flow(ctx.factory, ctx.admin_factory(region), ctx.cfg, region, on_progress=progress,
+                             on_provisioned=ctx.mark_provisioned, clock=ctx.clock)
+        _cache_material(ctx, region, result.material)
+        notes = ctx.after_create(result, progress) if ctx.after_create else []
+        message = f"VPN ready at {result.ip} ({region})" + (" — " + "; ".join(notes) if notes else "")
+        return OpOutcome(message, {"region": region, "ip": result.ip})
+    return _aws_guard(run)
+
+
+def create_command(ctx: OpContext) -> Command:
+    """spec-06 §6.1 on the spec-05 runner; hard cap operations.create_timeout_seconds (index R8, M8: 1200)."""
+    return Command("create", "create", "create", lambda progress: handle_create(ctx, progress),
+                   timeout_s=ctx.cfg.operations.create_timeout_seconds)
 
 
 def repair_job(ctx: OpContext) -> Handler:
