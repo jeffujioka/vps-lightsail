@@ -186,3 +186,64 @@ def test_region_select_persists_and_drives_the_next_create(                     
     world = fake_world.read()
     assert world["region"] == "eu-west-1" and world["instance"] is not None
     assert {c["region"] for c in fake_world.calls("create_instance")} == {"eu-west-1"}
+
+
+V1_TEXT = "companion app is API v1 — update it (spec-04) to stage configs; nothing pushed"
+
+
+def text(body):
+    return body.decode() if isinstance(body, bytes) else (body or "")
+
+
+def final(action):
+    return lambda m: m.json()["action"] == action and m.json()["outcome"] != "running"
+
+
+def fresh_world(fake_world):
+    fake_world.clear_instance()
+    fake_world.patch(static_ip=None, static_ips=[], transition_seconds=1)
+
+
+def test_create_stages_the_companion_and_publishes_qr_then_peer_buttons_work(        # §9.2 row 1
+        agent_authed, fake_world, fake_companion, mqtt_watch, qr_watch, mqtt_as):
+    fresh_world(fake_world)
+    boot(agent_authed, mqtt_watch)
+    ha = mqtt_as("homeassistant")
+    ha.press("create")
+    mqtt_watch.wait_for(STATE, state_is("healthy"), timeout=30)
+    it = iter(m.json()["state"] for m in mqtt_watch.all(STATE))
+    assert all(any(s == want for s in it) for want in ("creating", "provisioning", "healthy"))
+    done = mqtt_watch.wait_for(RESULT, final("create"), timeout=30).json()
+    assert done["outcome"] == "ok" and "shield: staged (press Connect)" in done["message"]
+    progress = {m.json()["message"] for m in mqtt_watch.all(RESULT)
+                if m.json()["action"] == "create" and m.json()["message"].startswith("running: ")}
+    assert len(progress) >= 3
+    posts = [r for r in fake_companion.requests if r.method == "POST"]
+    assert [(r.path, r.query.get("activate")) for r in posts] == [("/config", "false")]   # staged, never /connect
+    assert "Address = 10.8.0.2/32" in text(posts[0].body)
+    qr_watch.wait_for(QR_IPHONE, lambda m: m.payload.startswith(b"\x89PNG\r\n\x1a\n"), timeout=10)
+    fake_companion.requests.clear()
+    ha.press("peer/shield/connect")
+    ok = mqtt_watch.wait_for(RESULT, final("peer/shield/connect"), timeout=30).json()
+    assert ok["outcome"] == "ok" and ok["message"].startswith("shield connected to ")
+    assert [(r.path, r.query.get("activate")) for r in fake_companion.requests if r.method == "POST"] == [
+        ("/config", "false"), ("/connect", None)]
+    fake_companion.requests.clear()
+    ha.press("peer/shield/disconnect")
+    assert mqtt_watch.wait_for(RESULT, final("peer/shield/disconnect"), timeout=30).json()["outcome"] == "ok"
+    assert [r.path for r in fake_companion.requests] == ["/disconnect"]
+
+
+def test_v1_companion_is_never_contacted(agent_authed, fake_world, fake_companion, mqtt_watch, mqtt_as):  # row 3
+    fresh_world(fake_world)
+    fake_companion.api = 1
+    fake_world.set_devices([fake_companion.device_record()])
+    boot(agent_authed, mqtt_watch)
+    ha = mqtt_as("homeassistant")
+    ha.press("create")
+    done = mqtt_watch.wait_for(RESULT, final("create"), timeout=60).json()
+    assert done["outcome"] == "ok" and f"shield: NOT staged — {V1_TEXT}" in done["message"]
+    ha.press("peer/shield/connect")
+    refused = mqtt_watch.wait_for(RESULT, final("peer/shield/connect"), timeout=30).json()
+    assert refused["ok"] is False and f"shield: {V1_TEXT}" in refused["message"]
+    assert fake_companion.requests == []

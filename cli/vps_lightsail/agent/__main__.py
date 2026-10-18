@@ -24,9 +24,10 @@ from vps_lightsail.agent.clients import Clients, build_clients
 from vps_lightsail.agent.commands import Command, CommandRunner, result_payload
 from vps_lightsail.agent.commands_create import (REPAIR_TIMEOUT_S, OpContext, RepairLoop, create_command,
                                                  destroy_command, repair_job)
-from vps_lightsail.agent.commands_peer import after_create, peer_commands
+from vps_lightsail.agent.commands_peer import after_create, material_for, peer_commands
 from vps_lightsail.agent.contract import Topics
 from vps_lightsail.agent.mqtt import MqttConnection
+from vps_lightsail.agent.qr import QrKeeper
 from vps_lightsail.agent.region import REGION_ACTION, RegionRejected, RegionStore
 from vps_lightsail.agent.runtime import Agent
 from vps_lightsail.core import operations
@@ -235,6 +236,15 @@ def attach_region(agent: Agent, store: RegionStore, conn: MqttConnection) -> Non
     agent.add_message_route(topics.region_set, on_set)
 
 
+def attach_qr(agent: Agent, cfg: AgentConfig, clients: Clients, conn: MqttConnection) -> QrKeeper:
+    """spec-06 §5.4 rows 2, 4, 5: state-cycle publish/clear + the 2 s boot sweep of stale peer/+/qr."""
+    ctx = op_context(cfg, clients, conn)               # its own cache: rule 2 is "fetch material (1 SSH)"
+    keeper = QrKeeper(ctx.publish, conn.topics, cfg, lambda region, info: material_for(ctx, region, info))
+    agent.add_message_route(conn.topics.qr_filter, keeper.on_boot_qr, on_subscribed=keeper.start_boot_window)
+    agent.add_state_listener(keeper.on_state)
+    return keeper
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -262,6 +272,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     agent = Agent(cfg, clients, conn, ops=runner)            # the runner is the Agent's OperationView (§2.6)
     attach_command_runner(agent, runner, conn.topics)
     attach_region(agent, region_store, conn)
+    attach_qr(agent, cfg, clients, conn)
     start_repair_loop(agent, runner, op_context(cfg, clients, conn))
     agent.run(stop)                              # starts the connection; returns after "offline"
     return EXIT_OK

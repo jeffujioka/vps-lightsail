@@ -96,7 +96,7 @@ def test_attach_routes_cmd_filter_with_boot_window_and_shutdown_hook():   # spec
 
 
 def test_enabled_slices_publish_start_stop_last_result():                 # R12 · spec-05 §5.1
-    assert ENABLED_SLICES == frozenset({"02", "05"})
+    assert ENABLED_SLICES == frozenset({"02", "05", "06"})
     doc = build_discovery(default_config(), ENABLED_SLICES)
-    assert normalise_sw(doc) == load_golden("discovery_02_05.json") and len(doc["cmps"]) == 16
+    assert normalise_sw(doc) == load_golden("discovery_02_05_06.json") and len(doc["cmps"]) == 22
     assert {"start", "stop", "last_result"} <= doc["cmps"].keys()

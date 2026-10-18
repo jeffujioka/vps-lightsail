@@ -62,6 +62,6 @@ def test_retained_discovery_is_the_enabled_slices_golden(agent, mqtt_watch):    
     mqtt_watch.wait_for(DISCOVERY, timeout=15.0)                              # after the 5 s restore window (02a2) …
     mqtt_watch.resubscribe()                                                  # … and retained
     got = mqtt_watch.wait_for(DISCOVERY, retained=True, timeout=5.0).json()
-    assert normalise_sw(got) == load_golden("discovery_02_05.json") and len(got["cmps"]) == 16
+    assert normalise_sw(got) == load_golden("discovery_02_05_06.json") and len(got["cmps"]) == 22
     assert got["dev"]["sw"] == got["o"]["sw"] == vps_lightsail.__version__
-    assert f"published discovery {DISCOVERY} (16 components)" in agent.logs()
+    assert f"published discovery {DISCOVERY} (22 components)" in agent.logs()

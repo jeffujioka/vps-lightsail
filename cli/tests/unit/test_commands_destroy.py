@@ -85,10 +85,10 @@ def test_aws_errors_become_operation_failed(world, top, message):               
     assert str(e.value) == message
 
 
-def test_destroy_command_uses_the_destroy_cap_and_stays_out_of_discovery(world):    # R8 · M8 · R12
+def test_destroy_command_uses_the_destroy_cap(world):    # R8 · M8 · R12
     cmd = destroy_command(context(world(), []))
     assert (cmd.suffix, cmd.action, cmd.operation, cmd.timeout_s) == ("destroy", "destroy", "destroy", 900)
-    assert ENABLED_SLICES == frozenset({"02", "05"}) and REPAIR_TIMEOUT_S == 300.0
+    assert "06" in ENABLED_SLICES and REPAIR_TIMEOUT_S == 300.0
 
 
 def test_repair_job_is_silent_without_orphans_and_reports_them(world):             # M12
