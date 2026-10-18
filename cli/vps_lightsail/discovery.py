@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from zeroconf import ServiceBrowser, ServiceStateChange, Zeroconf
@@ -17,6 +18,16 @@ class Device:
     ip: str
     port: int
     token: str | None = None
+    api: int = 1
+
+
+def api_from_txt(props: Mapping[bytes, bytes | None] | None) -> int:
+    """TXT `api` → int; missing or unparsable → 1 (spec-01 §7: a missing `api` key means v1)."""
+    raw = (props or {}).get(b"api")
+    try:
+        return int(raw.decode("utf-8") if isinstance(raw, bytes) else raw)
+    except (TypeError, ValueError):
+        return 1
 
 
 class DeviceDiscovery:
@@ -58,4 +69,5 @@ class DeviceDiscovery:
             ip=addresses[0],
             port=info.port or 8080,
             token=token,
+            api=api_from_txt(info.properties),
         ))
