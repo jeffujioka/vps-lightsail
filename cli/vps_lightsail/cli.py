@@ -3,23 +3,34 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import NoReturn
 
 import httpx
-from botocore.exceptions import BotoCoreError, ClientError
+import qrcode
+from botocore.exceptions import BotoCoreError, ClientError     # reads (locate, orphan scan) raise these unwrapped
 
 from .discovery import Device, DeviceDiscovery
-from .push import check_health, disconnect_device, push_config, push_config_from_file
+from .push import check_health, disconnect_device, get_status, push_config, push_config_from_file
 from . import infra
-from .core.config import default_config
-from .core.lightsail import Boto3Lightsail, InstanceInfo, LightsailClient
-from .core.peers import is_connected, peer_ip
-from .core.server import ProbeResult, ServerProbe, SshServer
+from .core.clock import utcnow
+from .core.companions import (V1_REFUSAL, CompanionAmbiguous, CompanionNoToken, CompanionNotFound,  # noqa: F401
+                              CompanionReport, disconnect_companions, resolve_companion, token_for, v1_refusal)
+from .core.config import AgentConfig, ConfigError, PeerSpec, default_config, load_config
+from .core.fakes import DEVICES_FILE, FakeDiscovery, FakeServer, fake_factory
+from .core.lightsail import (Boto3Lightsail, InstanceInfo, LightsailClient, LightsailError, LightsailFactory,
+                             boto3_factory, locate_instance)
+from .core.operations import OperationFailed, OperationRejected
+from .core.peers import is_connected, peer_conf, peer_ip
+from .core.provision import DestroyIncomplete, DestroyReport, InstanceExists, repair_flow
+from .core.server import ProbeResult, ServerAdmin, ServerProbe, SshServer, SshServerAdmin
 
 REGIONS = {
     "sa-east-1": "São Paulo, Brazil",
@@ -28,8 +39,65 @@ REGIONS = {
     "ap-northeast-1": "Tokyo, Japan",
 }
 
+FAKE_OK = frozenset({"setup", "teardown", "repair", "stop"})   # --fake refuses the rest (no AWS); 06d2 adds export/push
 
-def main() -> None:
+@dataclasses.dataclass(frozen=True)
+class Backend:                                   # the test seam: AWS + SSH + mDNS, or the --fake world
+    factory: LightsailFactory
+    admin_for: Callable[[str], ServerAdmin]      # region → admin
+    scan: Callable[[float], list[Device]]        # timeout → mDNS records
+
+def _backend(args: argparse.Namespace) -> Backend:
+    if getattr(args, "fake", None):              # spec-06 §8.1: FakeServer implements ServerAdmin
+        d = Path(args.fake)
+        return Backend(fake_factory(d), lambda _r: FakeServer(d / "server.json"),
+                       lambda _t: FakeDiscovery(d / DEVICES_FILE).scan())
+    factory = boto3_factory(args.profile)
+    return Backend(factory, lambda r: SshServerAdmin(factory(r)), lambda t: DeviceDiscovery(timeout=t).scan())
+
+def _fail(message: str, *, hint: str | None = None, code: int = 1) -> NoReturn:
+    print(f"❌ {message}", file=sys.stderr)
+    if hint:
+        print(f"   hint: {hint}", file=sys.stderr)
+    sys.exit(code)
+
+def _context(args: argparse.Namespace) -> tuple[AgentConfig, str, Backend]:
+    try:
+        base = load_config(args.config) if getattr(args, "config", None) else None
+    except ConfigError as e:
+        _fail(f"{args.config}: " + "; ".join(e.problems), code=2)
+    except OSError as e:
+        _fail(f"cannot read --config: {e}", code=2)
+    except ImportError:                                  # PyYAML ships only in the `agent` extra (01a1)
+        _fail("--config needs PyYAML: install vps-lightsail[agent] (or uv sync)", code=2)
+    return infra.cli_config(base, args.region), args.region, _backend(args)
+
+def _ns(**kw: object) -> argparse.Namespace:
+    return argparse.Namespace(**{"fake": None, "config": None, "force": False, "stage": False,
+                                 "dry_run": False, "no_disconnect": False, "timeout": None, **kw})
+
+def _env_token(device: Device) -> str | None:
+    key = "".join(c if c.isalnum() else "_" for c in device.name).upper()
+    return os.environ.get(f"SHIELD_VPN_TOKEN_{key}") or os.environ.get("SHIELD_VPN_TOKEN")
+
+class _Devices:
+    """DiscoveryLike, one scan per command; env tokens overlaid → R16 order via core token_for."""
+
+    def __init__(self, backend: Backend, timeout: float) -> None:
+        self._backend, self._timeout, self._seen = backend, timeout, None
+
+    def scan(self) -> list[Device]:
+        if self._seen is None:
+            print(f"▶ Scanning for companions ({self._timeout:g}s)…")
+            self._seen = [dataclasses.replace(d, token=_env_token(d) or d.token)
+                          for d in self._backend.scan(self._timeout)]
+        return self._seen
+
+def _devices(args: argparse.Namespace, cfg: AgentConfig, backend: Backend) -> _Devices:
+    return _Devices(backend, args.timeout or cfg.operations.companion_scan_seconds)   # R15
+
+
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="vps-lightsail",
         description="Personal WireGuard VPN on AWS Lightsail — setup, push configs to devices, teardown.",
@@ -52,27 +120,23 @@ EXAMPLES:
   vps-lightsail stop                         # disconnect devices + stop server (keeps config)
   vps-lightsail start                        # start server again, same IP and keys
   vps-lightsail teardown                     # destroy everything
+  vps-lightsail repair --dry-run             # list orphaned static IPs
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+    parser.add_argument("--fake", metavar="DIR", help=argparse.SUPPRESS)   # file-backed world (tests only)
     sub = parser.add_subparsers(dest="command")
 
-    setup_p = sub.add_parser("setup", help="Create VPS + WireGuard + push configs to devices")
-    setup_p.add_argument("--region", default=os.environ.get("AWS_REGION", "sa-east-1"),
-                         help="AWS region (default: sa-east-1)")
-    setup_p.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "personal"),
-                         help="AWS CLI profile (default: personal)")
+    setup_p = _aws(sub.add_parser("setup", help="Create VPS + WireGuard, print QR codes, push companions"))
+    setup_p.add_argument("--force", action="store_true", help="destroy an existing instance first (any region)")
+    setup_p.add_argument("--stage", action="store_true", help="store companion configs without activating")
 
-    teardown_p = sub.add_parser("teardown", help="Destroy all resources (stops billing)")
-    teardown_p.add_argument("--region", default=os.environ.get("AWS_REGION", "sa-east-1"))
-    teardown_p.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "personal"))
+    _aws(sub.add_parser("teardown", help="Destroy all resources (stops billing)"))
 
-    stop_p = sub.add_parser("stop", help="Disconnect devices, then stop the server (keeps keys and IP; still billed)")
-    stop_p.add_argument("--no-disconnect", action="store_true",
-                        help="Stop the server without telling devices to drop their tunnel")
-    stop_p.add_argument("--timeout", type=float, default=5.0, help="mDNS scan timeout in seconds")
-    stop_p.add_argument("--region", default=os.environ.get("AWS_REGION", "sa-east-1"))
-    stop_p.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "personal"))
+    _aws(sub.add_parser("repair", help="Release orphaned static IPs")).add_argument("--dry-run", action="store_true")
+
+    _aws(sub.add_parser("stop", help="Disconnect devices, then stop the server (keeps keys and IP; still billed)")
+         ).add_argument("--no-disconnect", action="store_true", help="do not tell devices to drop their tunnel")
 
     start_p = sub.add_parser("start", help="Start a stopped server and wait for WireGuard")
     start_p.add_argument("--region", default=os.environ.get("AWS_REGION", "sa-east-1"))
@@ -103,11 +167,14 @@ EXAMPLES:
     disc_p.add_argument("--region", default=os.environ.get("AWS_REGION", "sa-east-1"))
     disc_p.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "personal"))
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.fake and args.command not in FAKE_OK:
+        _fail(f"--fake supports only {', '.join(sorted(FAKE_OK))}", code=2)
 
     commands = {
         "setup": cmd_setup,
         "teardown": cmd_teardown,
+        "repair": cmd_repair,
         "stop": cmd_stop,
         "start": cmd_start,
         "push": cmd_push,
@@ -144,21 +211,21 @@ def cmd_interactive() -> None:
 
     if choice == "1":
         region = _ask_region()
-        ns = argparse.Namespace(region=region, profile=os.environ.get("AWS_PROFILE", "personal"))
+        ns = _ns(region=region, profile=os.environ.get("AWS_PROFILE", "personal"))
         cmd_setup(ns)
     elif choice == "2":
         region = os.environ.get("AWS_REGION", "sa-east-1")
-        ns = argparse.Namespace(
+        ns = _ns(
             token=None, device=None, conf=None, timeout=5.0,
             region=region, profile=os.environ.get("AWS_PROFILE", "personal"),
         )
         cmd_push(ns)
     elif choice == "3":
         region = os.environ.get("AWS_REGION", "sa-east-1")
-        ns = argparse.Namespace(region=region, profile=os.environ.get("AWS_PROFILE", "personal"))
+        ns = _ns(region=region, profile=os.environ.get("AWS_PROFILE", "personal"))
         cmd_status(ns)
     elif choice == "4":
-        ns = argparse.Namespace(
+        ns = _ns(
             device=None, timeout=5.0,
             region=os.environ.get("AWS_REGION", "sa-east-1"),
             profile=os.environ.get("AWS_PROFILE", "personal"),
@@ -170,20 +237,20 @@ def cmd_interactive() -> None:
         if confirm != "y":
             print("  Cancelled.")
             return
-        ns = argparse.Namespace(region=region, profile=os.environ.get("AWS_PROFILE", "personal"))
+        ns = _ns(region=region, profile=os.environ.get("AWS_PROFILE", "personal"))
         cmd_teardown(ns)
     elif choice == "6":
-        ns = argparse.Namespace(timeout=5.0)
+        ns = _ns(timeout=5.0)
         cmd_scan(ns)
     elif choice == "7":
-        ns = argparse.Namespace(
+        ns = _ns(
             no_disconnect=False, timeout=5.0,
             region=os.environ.get("AWS_REGION", "sa-east-1"),
             profile=os.environ.get("AWS_PROFILE", "personal"),
         )
         cmd_stop(ns)
     elif choice == "8":
-        ns = argparse.Namespace(
+        ns = _ns(
             region=os.environ.get("AWS_REGION", "sa-east-1"),
             profile=os.environ.get("AWS_PROFILE", "personal"),
         )
@@ -194,41 +261,116 @@ def cmd_interactive() -> None:
         print("  Invalid choice.")
 
 
+def _save(name: str, conf: str) -> Path:
+    infra.DIST.mkdir(exist_ok=True)
+    path = infra.DIST / f"{name}-vpn.conf"
+    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+        f.write(conf)
+    path.chmod(0o600)                                             # O_TRUNC keeps an older file's mode
+    return path
+
+def _print_qr(name: str, conf: str) -> None:
+    print(f"\n📱 {name}: WireGuard app → + → Create from QR code")
+    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_M, border=2)
+    qr.add_data(conf)
+    qr.make(fit=True)
+    qr.print_ascii(out=sys.stdout, invert=True)
+
+def _push(label: str, dev: Device, conf: str, token: str, *, activate: bool, probe: bool = False) -> bool:
+    """--stage is refused for v1 before any request (spec-06 §5.3); probe=True asks GET /status (no TXT)."""
+    if not activate and not ((s := get_status(dev, token)) and s.api >= 2 if probe else dev.api >= 2):
+        print(f"  ⚠️  {v1_refusal(label)}")
+        return False
+    r = push_config(dev, conf, token, activate=activate)
+    print(f"  ✅ {label} {'activated' if activate else 'staged'}" if r.success
+          else f"  ⚠️  {label}: {r.error or f'HTTP {r.status_code}'}")
+    return r.success
+
+def _push_companion(peer: PeerSpec, conf: str, devices: _Devices, *, activate: bool,
+                    token: str | None = None) -> bool:
+    try:
+        dev = resolve_companion(peer, devices, os.environ)
+        ok = _push(peer.name, dev, conf, token or token_for(peer.name, dev) or "", activate=activate)
+    except (CompanionNotFound, CompanionAmbiguous, CompanionNoToken) as e:
+        print(f"  ⚠️  {peer.name}: {e}")
+        ok = False
+    if not ok:
+        print(f"  💾 {peer.name}: config kept in {_save(peer.name, conf)}")
+    return ok
+
+def _disconnect(cfg: AgentConfig, devices: _Devices) -> Callable[[], None]:
+    def hook() -> None:
+        for item in disconnect_companions(list(cfg.peers), scan=devices.scan).outcomes:
+            print(f"  {'✅' if item[1] == 'disconnected' else '⚠️ '} {CompanionReport((item,)).summary()}")
+    return hook
+
+def _print_report(r: DestroyReport) -> None:
+    alive = any(x.startswith("instance ") for x in r.leftovers)
+    print(f"  static IPs released: {', '.join(r.released_ips) or 'none'}; instance "
+          f"{'deleted' if r.deleted_instance else 'NOT deleted' if alive else 'absent'}{'; key pair deleted' * r.deleted_key_pair}")
+    for item in r.leftovers:
+        print(f"  ⚠️  left: {item}")
+
 def cmd_setup(args: argparse.Namespace) -> None:
-    vps = infra.setup(region=args.region, profile=args.profile)
-
-    print("\n▶ Scanning for devices to push config...")
-    push_ns = argparse.Namespace(
-        token=None, device=None, conf=None, timeout=5.0,
-        region=args.region, profile=args.profile,
-    )
-    _push_to_devices(push_ns, vps)
-
+    cfg, region, backend = _context(args)
+    devices = _devices(args, cfg, backend)
+    try:
+        res = infra.setup(region, args.profile, cfg=cfg, force=args.force, factory=backend.factory,
+                          admin=backend.admin_for(region), before_delete=_disconnect(cfg, devices))
+    except InstanceExists as e:                                   # R11 order: the refusal first …
+        _fail(str(e), hint="rerun with --force to destroy it first")
+    except DestroyIncomplete as e:                                # … then a --force destroy cut short …
+        _print_report(e.report)
+        _fail(str(e), hint="rerun `setup --force`: the destroy resumes where it stopped")
+    except (OperationRejected, OperationFailed, LightsailError, ClientError, BotoCoreError) as e:
+        _fail(f"setup failed: {e}", hint="`vps-lightsail repair --dry-run` lists anything left billable")
+    for peer in cfg.qr_peers():
+        conf = peer_conf(res.material, cfg, peer.name, res.ip)
+        _print_qr(peer.name, conf)
+        print(f"  💾 {_save(peer.name, conf)}")
+    for peer in cfg.companions():
+        _push_companion(peer, peer_conf(res.material, cfg, peer.name, res.ip), devices, activate=not args.stage)
+    print(f"\n✅ VPN ready! Server: {res.ip} ({res.region})")
 
 def cmd_teardown(args: argparse.Namespace) -> None:
-    infra.teardown(region=args.region, profile=args.profile)
+    cfg, region, backend = _context(args)
+    try:
+        found = locate_instance(backend.factory, cfg.regions, cfg.instance_name)
+        if found and found[0] != region:                          # never a silent ✅ (Review Focus 1)
+            _fail(f"{cfg.instance_name} is in {found[0]}, not {region} — nothing destroyed",
+                  hint=f"rerun with --region {found[0]}")
+        report = infra.teardown(region, args.profile, cfg=cfg, factory=backend.factory,
+                                before_delete=_disconnect(cfg, _devices(args, cfg, backend)))
+    except DestroyIncomplete as e:                                # local files are kept (Task 1)
+        _print_report(e.report)
+        _fail(str(e), hint="rerun teardown: every step resumes where it stopped")
+    except (OperationRejected, OperationFailed, LightsailError, ClientError, BotoCoreError) as e:
+        _fail(f"teardown failed: {e}")
+    _print_report(report)
+    print(f"✅ destroyed — nothing billable left in {report.region}")
 
+def cmd_repair(args: argparse.Namespace) -> None:
+    cfg, _region, backend = _context(args)
+    try:
+        done = repair_flow(backend.factory, cfg, utcnow(), dry_run=args.dry_run, on_progress=infra.say)
+    except (OperationRejected, OperationFailed, LightsailError, ClientError, BotoCoreError) as e:
+        _fail(f"repair failed: {e}", hint="rerun later: repair is idempotent")
+    for o in done:
+        print(f"  {'would handle' if args.dry_run else 'handled'}: {o.kind} {o.name} in {o.region}{' (billable)' * o.billable}")
+    print(f"✅ {len(done)} orphan(s) {'found' if args.dry_run else 'handled'} across {', '.join(cfg.regions)}")
 
-def cmd_stop(args: argparse.Namespace) -> None:
-    # Configs route 0.0.0.0/0 through the tunnel, so a device still connected
-    # to a stopped server loses internet entirely. Drop tunnels first.
+def cmd_stop(args: argparse.Namespace) -> None:            # R16; 05b's infra.stop errors propagate as before
+    cfg, region, backend = _context(args)
     if not args.no_disconnect:
-        print(f"▶ Scanning for devices to disconnect ({args.timeout}s)...")
-        devices = DeviceDiscovery(timeout=args.timeout).scan()
-        if not devices:
-            print("  No companion devices found.")
-        for device in devices:
-            token = _get_token(device, args)
-            if not token:
-                print(f"  ⚠️  No token for {device.name}, turn its tunnel off by hand")
-                continue
-            result = disconnect_device(device, token)
-            if result.success:
-                print(f"  ✅ {device.name} disconnected")
-            else:
-                print(f"  ⚠️  {device.name}: {result.error or f'HTTP {result.status_code}'}")
-    print("  ℹ️  Devices without the companion app (iPhone, Mac) must be turned off by hand.")
-    infra.stop(region=args.region, profile=args.profile)
+        _disconnect(cfg, _devices(args, cfg, backend))()
+    infra.stop(region, args.profile, client=backend.factory(region))
+
+def _aws(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    p.add_argument("--region", default=os.environ.get("AWS_REGION", "sa-east-1"))
+    p.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "personal"))
+    p.add_argument("--config", type=Path, help="agent YAML (peers, regions); default: shield + iphone")
+    p.add_argument("--timeout", type=float, help="mDNS scan seconds (default: operations.companion_scan_seconds)")
+    return p
 
 
 def cmd_start(args: argparse.Namespace) -> None:
