@@ -85,6 +85,7 @@ class CommandRunner:
         self._generation = 0
         self._window_opened = False
         self._window_until: float | None = None
+        self._internal = False                   # the in-flight run is try_run_internal's (06a)
 
     def register(self, cmd: Command) -> None:
         self._commands[cmd.suffix] = cmd
@@ -207,7 +208,7 @@ class CommandRunner:
         if isinstance(retained.get("started_at"), str):
             payload["started_at"] = retained["started_at"]       # same action/started_at as the dead run
         with self._lock:
-            if self._inflight is not None:                       # a live operation of ours owns the topic
+            if self._inflight is not None and not self._internal:   # a live command owns the topic
                 return
             self._publish(payload)
         log.warning("previous agent stopped during %s: result marked interrupted", action)
@@ -215,11 +216,54 @@ class CommandRunner:
     def shutdown(self, grace_s: float = 2.0) -> None:            # SIGTERM, before "offline" (§2.7 step 3)
         self._idle.wait(grace_s)
         with self._lock:
-            cur = self._inflight
+            cur, internal = self._inflight, self._internal
             if cur is None:
                 return
             self._end()
-            self._publish(result_payload(cur.action, "interrupted",
-                                         f"interrupted: agent stopping during {cur.action}",
-                                         cur.started_at, self._clock.now()))
-        log.warning("agent stopping during %s: result marked interrupted", cur.action)
+            self._internal = False
+            if not internal:                                     # a background repair has nothing to report
+                self._publish(result_payload(cur.action, "interrupted",
+                                             f"interrupted: agent stopping during {cur.action}",
+                                             cur.started_at, self._clock.now()))
+        if not internal:
+            log.warning("agent stopping during %s: result marked interrupted", cur.action)
+
+    def try_run_internal(self, action: str, handler: Handler, timeout_s: float) -> bool:
+        """Background work under the one lock (index §5.4; spec-06 §3.3 repair). False when anything is in
+        flight. Silent: no `running`, never touches last_error, snapshot().operation stays None; the final
+        result is published only when the handler returns a non-empty message (M12)."""
+        now = self._clock.now()
+        with self._lock:
+            if self._inflight is not None:
+                return False
+            self._generation += 1
+            generation, self._internal = self._generation, True
+            self._inflight = InFlight(action, None, now, self._clock.monotonic(), generation)
+            self._idle.clear()
+            self._timer = threading.Timer(timeout_s, self._finish_internal,          # R8: repair cap 300 s
+                                          (generation, action, None, f"timeout: {action} exceeded {timeout_s:g}s"))
+            self._timer.daemon = True
+            self._timer.start()
+        self._spawn(lambda: self._run_internal(action, handler, generation), f"op-{action}")
+        return True
+
+    def _run_internal(self, action: str, handler: Handler, generation: int) -> None:
+        try:
+            out, problem = handler(lambda step: log.info("%s: %s", action, step)), None
+        except Exception as e:  # noqa: BLE001 — background work: log it, never last_error, never crash
+            out, problem = None, f"{action} failed: {e}"
+        self._finish_internal(generation, action, out, problem)
+
+    def _finish_internal(self, generation: int, action: str, out: OpOutcome | None,
+                         problem: str | None) -> None:            # worker thread or cap Timer
+        with self._lock:
+            cur = self._inflight
+            if cur is None or cur.generation != generation:
+                return                                           # late outcome after the cap
+            self._end()
+            self._internal = False
+            if out is not None and out.message:
+                self._publish(result_payload(action, "ok", out.message, cur.started_at, self._clock.now(),
+                                             out.details))
+        if problem:
+            log.warning("%s", problem)
