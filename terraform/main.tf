@@ -11,6 +11,17 @@ provider "aws" {
   region = var.aws_region
 }
 
+variable "peers" {
+  description = "Peer names in config order; peers[i] gets 10.8.0.(2+i)"
+  type        = list(string)
+  default     = ["shield", "iphone"]
+}
+
+variable "static_ip_name" {
+  type    = string
+  default = "vps-vpn-static-ip" # same as the CLI and the agent (was "${instance_name}-ip")
+}
+
 # ── SSH key pair ──────────────────────────────────────────────────────────────
 
 resource "aws_lightsail_key_pair" "vpn" {
@@ -41,7 +52,7 @@ resource "aws_lightsail_instance" "vpn" {
 
   provisioner "remote-exec" {
     inline = [
-      "sudo bash /tmp/provision.sh",
+      "sudo VPS_PEERS='${join(" ", var.peers)}' bash /tmp/provision.sh",
     ]
   }
 }
@@ -67,7 +78,7 @@ resource "aws_lightsail_instance_public_ports" "vpn" {
 # ── Static IP ─────────────────────────────────────────────────────────────────
 
 resource "aws_lightsail_static_ip" "vpn" {
-  name = "${var.instance_name}-ip"
+  name = var.static_ip_name
 }
 
 resource "aws_lightsail_static_ip_attachment" "vpn" {

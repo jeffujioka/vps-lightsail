@@ -18,8 +18,8 @@ output "next_steps" {
   value       = <<-EOT
     Server ready at ${aws_lightsail_static_ip.vpn.ip_address}
 
-    `make tf-setup` fetches mac-vpn.conf + the iPhone QR automatically.
-    To re-fetch the client configs later:
+    `make tf-setup` then runs `make config`: dist/shield-vpn.conf + the iPhone QR.
+    To re-fetch the client configs later (e.g. after swap-ip.sh):
       make config
   EOT
 }
