@@ -10,47 +10,39 @@ import android.view.View
 import android.widget.Button
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
-import com.jeffujioka.vpslightsail.persistence.ConfigStore
+import androidx.core.content.ContextCompat
+import com.jeffujioka.vpslightsail.api.ToggleButton
+import com.jeffujioka.vpslightsail.api.UiModel
 
+/** Truthful UI (spec-04 §6): every label comes from app.api.status() — the backend, never the intent. */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var statusText: TextView
+    private lateinit var configText: TextView
+    private lateinit var errorText: TextView
     private lateinit var tokenText: TextView
     private lateinit var vpnToggleButton: Button
-    private lateinit var configStore: ConfigStore
 
-    private val stateReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            if (intent.action == VpnControlService.ACTION_STATE_CHANGED) {
-                refreshUI()
-            }
-        }
+    private val stateReceiver = object : BroadcastReceiver() {        // bug #7: every api mutation lands here
+        override fun onReceive(context: Context, intent: Intent) = refreshUI()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
         statusText = findViewById(R.id.statusText)
+        configText = findViewById(R.id.configText)
+        errorText = findViewById(R.id.errorText)
         tokenText = findViewById(R.id.tokenText)
         vpnToggleButton = findViewById(R.id.vpnToggleButton)
-        configStore = ConfigStore(this)
-
         vpnToggleButton.setOnClickListener { onToggleVpn() }
-
-        val vpnIntent = VpnService.prepare(this)
-        if (vpnIntent != null) {
-            startActivityForResult(vpnIntent, VPN_REQUEST_CODE)
-        }
+        VpnService.prepare(this)?.let { startActivityForResult(it, VPN_REQUEST_CODE) }   // consent, once (spec-04 §5.6)
     }
 
     override fun onResume() {
         super.onResume()
-        registerReceiver(
-            stateReceiver,
-            IntentFilter(VpnControlService.ACTION_STATE_CHANGED),
-            RECEIVER_NOT_EXPORTED
-        )
+        ContextCompat.registerReceiver(this, stateReceiver, IntentFilter(VpnControlService.ACTION_STATE_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED)
         refreshUI()
     }
 
@@ -59,36 +51,28 @@ class MainActivity : AppCompatActivity() {
         unregisterReceiver(stateReceiver)
     }
 
-    private fun onToggleVpn() {
-        if (configStore.tunnelEnabled) {
-            startService(Intent(this, VpnControlService::class.java).apply {
-                action = VpnControlService.ACTION_DISCONNECT
-            })
-        } else if (configStore.lastConfig != null) {
-            startService(Intent(this, VpnControlService::class.java).apply {
-                action = VpnControlService.ACTION_CONNECT
-            })
+    private val app get() = application as ShieldVpnApp
+
+    private fun refreshUI() {                       // main thread; api.status() is lock-free
+        val ui = UiModel.from(app.api.status())
+        statusText.text = ui.statusLine
+        configText.text = ui.configLine
+        errorText.text = ui.errorLine.orEmpty()
+        errorText.visibility = if (ui.errorLine == null) View.GONE else View.VISIBLE
+        tokenText.text = app.configStore.authToken
+        vpnToggleButton.isEnabled = true
+        when (ui.button) {
+            ToggleButton.DISCONNECT -> { vpnToggleButton.visibility = View.VISIBLE; vpnToggleButton.text = "Disconnect" }
+            ToggleButton.CONNECT -> { vpnToggleButton.visibility = View.VISIBLE; vpnToggleButton.text = "Connect" }
+            ToggleButton.HIDDEN -> vpnToggleButton.visibility = View.GONE
         }
     }
 
-    private fun refreshUI() {
-        tokenText.text = configStore.authToken
-        val connected = configStore.tunnelEnabled
-        val hasConfig = configStore.lastConfig != null
-
-        statusText.text = if (connected) "Status: Connected" else "Status: Waiting for config..."
-
-        when {
-            connected -> {
-                vpnToggleButton.visibility = View.VISIBLE
-                vpnToggleButton.text = "Disconnect"
-            }
-            hasConfig -> {
-                vpnToggleButton.visibility = View.VISIBLE
-                vpnToggleButton.text = "Reconnect"
-            }
-            else -> vpnToggleButton.visibility = View.GONE
-        }
+    private fun onToggleVpn() {
+        val action = if (app.api.status().tunnelUp) VpnControlService.ACTION_DISCONNECT
+                     else VpnControlService.ACTION_CONNECT
+        vpnToggleButton.isEnabled = false          // re-enabled by the next STATE_CHANGED refresh
+        startService(Intent(this, VpnControlService::class.java).setAction(action))
     }
 
     companion object {

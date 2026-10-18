@@ -26,6 +26,23 @@
         android:textSize="20sp"
         android:layout_marginBottom="32dp" />
 
+    <TextView
+        android:id="@+id/configText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="8dp"
+        android:textColor="#cccccc"
+        android:textSize="18sp" />
+
+    <TextView
+        android:id="@+id/errorText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="16dp"
+        android:textColor="#ff8a80"
+        android:textSize="16sp"
+        android:visibility="gone" />
+
     <Button
         android:id="@+id/vpnToggleButton"
         android:layout_width="240dp"
