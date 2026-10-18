@@ -154,6 +154,23 @@ def test_failure_at_every_step(tmp_path, step, fail, admin_kw, flaky, policy, st
         assert "delete_instance" not in mutations(d) and marks == ([1] if step == 9 else [])
 
 
+def test_on_creating_never_fires_when_the_instance_already_exists(tmp_path):   # Review Focus 1 follow-up
+    d, seen = world(tmp_path, instance=dict(INST)), []
+    with pytest.raises(InstanceExists):
+        create_flow(fake_factory(d), Admin(), CFG, "sa-east-1", on_creating=seen.append, clock=FakeClock(NOW))
+    assert seen == []
+
+
+def test_on_creating_fires_before_create_instance_and_before_on_provisioned(tmp_path):   # Review Focus 4 follow-up
+    d, order = world(tmp_path), []
+    create_flow(fake_factory(d), Admin(), CFG, "sa-east-1",
+               on_creating=lambda: order.append(("creating", list(mutations(d)))),
+               on_provisioned=lambda: order.append(("provisioned", list(mutations(d)))), clock=FakeClock(NOW))
+    assert [m for m, _ in order] == ["creating", "provisioned"]
+    assert order[0][1] == []                                            # nothing mutated yet when on_creating fires
+    assert "create_instance" in order[1][1]                             # create_instance already happened by then
+
+
 def test_a_failing_rollback_names_the_leftovers(tmp_path):              # Review Focus 2
     d = world(tmp_path, fail={"put_public_ports": FAIL, "release_static_ip": "InjectedFailure"})
     with pytest.raises(OperationFailed) as info:
