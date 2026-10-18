@@ -4,6 +4,8 @@ Every call re-reads DIR/lightsail.json or DIR/server.json, so another process (a
 demo operator) can change the world while the agent runs. Writes are locked and atomic."""
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import tempfile
@@ -28,7 +30,16 @@ from vps_lightsail.core.lightsail import (
     PortRule,
     StaticIpInfo,
 )
-from vps_lightsail.core.server import PeerStatus, ProbeResult
+from vps_lightsail.core.peers import peer_ip
+from vps_lightsail.core.server import (
+    ClientMaterial,
+    CommandResult,
+    PeerStatus,
+    ProbeResult,
+    ProvisionError,
+    check_peers,
+)
+from vps_lightsail.core.waits import WaitTimeout
 from vps_lightsail.discovery import Device
 
 if TYPE_CHECKING:
@@ -308,6 +319,11 @@ class FakeLightsail:
         self._call("put_public_ports", instance_name, ports, edit=edit)
 
 
+def fake_key(label: str) -> str:
+    """A deterministic 44-char base64 'WireGuard key' for fake worlds (never a real key)."""
+    return base64.b64encode(hashlib.sha256(f"vps-lightsail-fake:{label}".encode()).digest()).decode()
+
+
 class FakeServer:
     """ServerProbe over DIR/server.json. Like SshServer it first fetches access details (through
     DIR/lightsail.json when present: logged, `fail` applies, AWS errors propagate), then reports
@@ -326,6 +342,52 @@ class FakeServer:
         return ProbeResult(True, wg, tuple(PeerStatus(**p) for p in doc.get("peers", [])) if wg else (),
                            frozenset(doc.get("wg_conf_ips", [])),
                            frozenset(doc.get("wg_conf_duplicates", [])), doc.get("error"))    # M1
+
+    # --- ServerAdmin (spec-06 §5.1, §8.1) --------------------------------------------------
+    def _access(self, instance_name: str) -> None:
+        if (world := self.state_path.with_name("lightsail.json")).exists():
+            FakeLightsail(world).get_access_details(instance_name)   # logged; R6 `fail` applies
+
+    def wait_ssh(self, instance_name: str, timeout: float = 240) -> None:
+        self._access(instance_name)
+        if not read_json(self.state_path).get("ssh_ok"):             # deviation (b): no waiting in the fake
+            raise WaitTimeout(f"SSH on {instance_name} (fake ssh_ok false)")
+
+    def provision(self, instance_name: str, peers: Sequence[str], timeout: float = 900) -> None:
+        names = check_peers(peers)
+        self._access(instance_name)
+        with locked(self.state_path):
+            doc = read_json(self.state_path)
+            failure = doc.get("fail_provision") or (None if doc.get("ssh_ok") else "ssh exit 255: fake ssh_ok false")
+            if failure:
+                doc["wg_active"] = False
+            else:
+                keys = doc.get("keys") or {}
+                doc["keys"] = {"server_public": keys.get("server_public") or fake_key("server_public"),
+                               "private": {**{n: fake_key(f"{n}_private") for n in names}, **keys.get("private", {})}}
+                doc.update(wg_active=True, wg_conf_ips=[peer_ip(i) for i in range(len(names))],
+                           wg_conf_duplicates=[], error=None)
+            write_json(self.state_path, doc)
+        if failure:
+            raise ProvisionError(failure if isinstance(failure, str) else "fake provision failure")
+
+    def fetch_material(self, instance_name: str, peers: Sequence[str]) -> ClientMaterial:
+        self._access(instance_name)
+        keys = read_json(self.state_path).get("keys") or {}
+        private = keys.get("private") or {}
+        for peer in peers:
+            if peer not in private:
+                raise ProvisionError(f"no key material for peer {peer}")
+        return ClientMaterial(keys["server_public"], {p: private[p] for p in peers})
+
+    def run(self, instance_name: str, command: str, *, stdin: str | None = None,
+            timeout: float = 60) -> CommandResult:
+        self._access(instance_name)
+        with locked(self.state_path):
+            doc = read_json(self.state_path)
+            doc.setdefault("runs", []).append(command)
+            write_json(self.state_path, doc)
+        return CommandResult(0, "", "")
 
 
 def fake_factory(fake_dir: Path) -> LightsailFactory:
