@@ -1,11 +1,13 @@
 """spec-06 §9.2 E2E-local (plan 06a3: destroy + row 8; 06b appends rows 2, 4, 5, 6; 06c rows 1, 3, 7)."""
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from tests.e2e.conftest import TEST_PASSWORDS, Watcher
+from vps_lightsail.core.lightsail import MUTATING_METHODS
 
 RESULT, STATE, QR_IPHONE = "vps_lightsail/cmd/result", "vps_lightsail/state", "vps_lightsail/peer/iphone/qr"
 IP, IP_NAME = "203.0.113.10", "vps-vpn-static-ip"
@@ -77,3 +79,68 @@ def test_orphan_static_ip_is_released_at_boot(agent_authed, fake_world, mqtt_wat
     assert done["details"]["orphans"] == [{"region": "sa-east-1", "kind": "static_ip", "name": IP_NAME, "billable": True}]
     assert fake_world.read()["static_ips"] == [] and len(fake_world.calls("release_static_ip")) == 1
     assert f"released orphan static IP {IP_NAME} in sa-east-1 (billed ~$0.005/h while unattached)" in agent_authed.logs()
+
+
+def empty_world(fake_world, **top):
+    fake_world.clear_instance()
+    fake_world.patch(static_ip=None, static_ips=[], **top)
+
+
+def test_create_is_refused_when_the_instance_exists(agent_authed, fake_world, mqtt_watch, mqtt_as):   # §9.2 row 2
+    fake_world.set_instance(state="running")
+    agent_authed.start()
+    mqtt_watch.wait_for(STATE, state_is("healthy"), timeout=15)
+    mqtt_watch.clear()
+    mqtt_as("homeassistant").press("create")
+    done = mqtt_watch.wait_for(RESULT, outcome("rejected"), timeout=15).json()
+    assert (done["action"], done["ok"]) == ("create", False) and "already exists" in done["message"]
+    time.sleep(2.5)                                                    # two more state cycles: never `error`
+    assert not [c for c in fake_world.calls() if c["method"] in MUTATING_METHODS]
+    assert {m.json()["state"] for m in mqtt_watch.all(STATE)} <= {"healthy"}
+
+
+def test_attach_failure_rolls_back_to_an_empty_world(agent_authed, fake_world, mqtt_watch, mqtt_as):  # row 4 · R6
+    empty_world(fake_world, fail={"attach_static_ip": {"code": "InjectedFailure", "times": 1}})
+    boot(agent_authed, mqtt_watch)
+    ha = mqtt_as("homeassistant")
+    ha.press("create")
+    done = mqtt_watch.wait_for(RESULT, outcome("failed"), timeout=45).json()
+    assert done["action"] == "create" and done["message"].endswith("(rolled back: nothing left in sa-east-1)")
+    assert fake_world.read()["instance"] is None and fake_world.read()["static_ips"] == []
+    mqtt_watch.wait_for(STATE, state_is("error"), timeout=10)
+    mqtt_watch.clear()
+    ha.press("destroy")                               # any accepted command clears last_error (M10)
+    assert mqtt_watch.wait_for(RESULT, outcome("rejected"), timeout=15).json()["message"] == "rejected: nothing to destroy"
+    mqtt_watch.wait_for(STATE, state_is("nonexistent"), timeout=10)
+
+
+def test_provision_failure_keeps_the_instance_until_destroy(agent_authed, fake_world, mqtt_watch, mqtt_as):  # row 5
+    empty_world(fake_world)
+    fake_world.set_server(wg_active=False, fail_provision="E: dpkg was interrupted")
+    boot(agent_authed, mqtt_watch)
+    ha = mqtt_as("homeassistant")
+    ha.press("create")
+    done = mqtt_watch.wait_for(RESULT, outcome("failed"), timeout=45).json()
+    assert done["message"] == ("provisioning failed: E: dpkg was interrupted — instance kept for diagnosis, "
+                               "press Destroy when done")
+    assert mqtt_watch.wait_for(STATE, state_is("error"), timeout=10).json()["underlying_state"] == "wg_down"
+    assert fake_world.read()["instance"]["state"] == "running" and len(fake_world.read()["static_ips"]) == 1
+    ha.press("destroy")
+    gone = mqtt_watch.wait_for(RESULT, lambda m: m.json()["action"] == "destroy" and m.json()["ok"] is True,
+                               timeout=45).json()
+    assert gone["message"].startswith("destroyed — nothing billable left in sa-east-1")
+    assert fake_world.read()["instance"] is None and fake_world.read()["static_ips"] == []
+
+
+def test_start_during_create_is_busy(agent_authed, fake_world, mqtt_watch, mqtt_as):             # row 6
+    empty_world(fake_world, transition_seconds=4)                      # the new instance stays pending ~4 s
+    boot(agent_authed, mqtt_watch)
+    ha = mqtt_as("homeassistant")
+    ha.press("create")
+    mqtt_watch.wait_for(RESULT, outcome("running"), timeout=10)
+    ha.press("start")
+    busy = mqtt_watch.wait_for(RESULT, outcome("busy"), timeout=10).json()
+    assert (busy["action"], busy["message"]) == ("start", "busy: create in progress")
+    mqtt_watch.wait_for(STATE, state_is("creating"), timeout=10)
+    assert mqtt_watch.wait_for(RESULT, outcome("ok"), timeout=60).json()["message"].startswith("VPN ready at ")
+    mqtt_watch.wait_for(STATE, state_is("healthy"), timeout=20)        # probing resumed after mark_provisioned

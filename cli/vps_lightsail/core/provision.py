@@ -214,10 +214,12 @@ def _rolled_back(factory: LightsailFactory, cfg: AgentConfig, region: str, e: Ba
 
 def create_flow(factory: LightsailFactory, admin: ServerAdmin, cfg: AgentConfig, region: str, *,
                 on_progress: Callable[[str], None] = _noop, on_provisioned: Callable[[], None] = _noop,
-                clock: Clock = SYSTEM_CLOCK) -> CreateResult:
-    """spec-06 §3.1 steps 0–9: R1 rollback before provisioning, K keep after; on_provisioned once."""
+                on_creating: Callable[[], None] = _noop, clock: Clock = SYSTEM_CLOCK) -> CreateResult:
+    """spec-06 §3.1 steps 0–9: R1 rollback before provisioning, K keep after; on_provisioned once.
+    on_creating fires once the precondition passes: before that point a rejection never shows `provisioning`."""
     on_progress(f"checking region {region}")
     _precondition(factory, cfg, region)
+    on_creating()
     repair_flow(factory, cfg, clock.now(), on_progress=on_progress)          # our orphans (§3.3)
     c, ops, name = factory(region), cfg.operations, cfg.instance_name
     interval, peers = ops.poll_seconds or 5.0, [p.name for p in cfg.peers]

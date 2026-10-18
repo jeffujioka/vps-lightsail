@@ -167,7 +167,8 @@ def build_command_runner(cfg: AgentConfig, clients: Clients, conn: MqttConnectio
                            clear_retained=lambda topic: conn.publish(topic, b"", retain=True, qos=1))
     runner.register(start_command(cfg, clients))
     runner.register(stop_command(cfg, clients))
-    ctx = replace(op_context(cfg, clients, conn), mark_provisioned=runner.mark_provisioned)
+    ctx = replace(op_context(cfg, clients, conn), mark_provisioned=runner.mark_provisioned,
+                 mark_creating=runner.mark_creating)
     runner.register(create_command(ctx))
     runner.register(destroy_command(ctx))
     return runner

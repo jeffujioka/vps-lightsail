@@ -43,6 +43,7 @@ class OpContext:
     clock: Clock = SYSTEM_CLOCK
     admin_factory: Callable[[str], ServerAdmin] | None = None       # 06b: region → ServerAdmin
     mark_provisioned: Callable[[], None] = _nothing                 # 06b: CommandRunner.mark_provisioned
+    mark_creating: Callable[[], None] = _nothing                    # 06b: CommandRunner.mark_creating
     materials: MaterialCache = field(default_factory=dict)          # shared by create and destroy
     after_create: Callable[[CreateResult, ProgressFn], list[str]] | None = None   # 06c3: staging + QR notes
 
@@ -124,7 +125,7 @@ def handle_create(ctx: OpContext, progress: ProgressFn) -> OpOutcome:
         if ctx.admin_factory is None:
             raise OperationFailed("create unavailable: no server admin configured")
         result = create_flow(ctx.factory, ctx.admin_factory(region), ctx.cfg, region, on_progress=progress,
-                             on_provisioned=ctx.mark_provisioned, clock=ctx.clock)
+                             on_provisioned=ctx.mark_provisioned, on_creating=ctx.mark_creating, clock=ctx.clock)
         _cache_material(ctx, region, result.material)
         notes = ctx.after_create(result, progress) if ctx.after_create else []
         message = f"VPN ready at {result.ip} ({region})" + (" — " + "; ".join(notes) if notes else "")

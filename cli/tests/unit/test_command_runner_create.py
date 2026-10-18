@@ -29,16 +29,25 @@ def test_mark_provisioned_lifecycle():                                   # Revie
 
     def handler(progress):
         seen.append(h.runner.snapshot())
+        h.runner.mark_creating()
+        seen.append(h.runner.snapshot())
         h.runner.mark_provisioned()
         seen.append(h.runner.snapshot())
         return OpOutcome("VPN ready")
     h.runner.register(Command("create", "create", "create", handler, timeout_s=60))
     assert h.runner.snapshot() == OpSnapshot()
     h.press("create")
-    assert h.runner.snapshot() == OpSnapshot(operation="create", provisioned=False)
+    assert h.runner.snapshot() == OpSnapshot(operation="create")
     h.jobs.pop()()
-    assert seen == [OpSnapshot(operation="create", provisioned=False), OpSnapshot(operation="create")]
+    assert seen == [OpSnapshot(operation="create"), OpSnapshot(operation="create", provisioned=False),
+                    OpSnapshot(operation="create")]
     assert h.runner.snapshot() == OpSnapshot() and h.results[-1]["outcome"] == "ok"
+
+
+def test_mark_creating_before_acceptance_changes_nothing():              # 06b2: no accepted create to flip
+    h = Harness()
+    h.runner.mark_creating()
+    assert h.runner.snapshot() == OpSnapshot()
 
 
 def test_a_failed_create_ends_provisioned_again():

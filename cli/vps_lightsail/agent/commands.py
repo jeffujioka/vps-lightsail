@@ -96,6 +96,13 @@ class CommandRunner:
             return OpSnapshot(operation=self._inflight.operation if self._inflight else None,
                               last_error=self._last_error, provisioned=self._provisioned)
 
+    def mark_creating(self) -> None:
+        """spec-06 §2.4: the precondition passed and the create is genuinely under way; probing pauses from
+        here (not from acceptance), so a create rejected before this point never shows `provisioning`."""
+        with self._lock:
+            if self._inflight is not None and self._inflight.operation == "create":
+                self._provisioned = False
+
     def mark_provisioned(self) -> None:
         """spec-06 §3.1 step 8 / Q9: the running create has provisioned WireGuard; probing may resume."""
         with self._lock:
@@ -150,7 +157,7 @@ class CommandRunner:
         self._generation += 1
         self._last_error = self._last_progress = None            # M10: only an accepted command clears it
         self._inflight = InFlight(cmd.action, cmd.operation, now, self._clock.monotonic(), self._generation)
-        self._provisioned = cmd.operation != "create"   # index §5.4: accepting "create" → False
+        self._provisioned = True   # index §5.4: flips False only once create's precondition passes (mark_creating)
         self._idle.clear()
         cap = f"timeout: {cmd.action} exceeded {cmd.timeout_s:g}s"
         self._timer = threading.Timer(cmd.timeout_s, self._finish,          # R8: one Timer per command
