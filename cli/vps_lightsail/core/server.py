@@ -109,7 +109,6 @@ def ssh_argv(details: AccessDetails, workdir: Path, remote: str) -> list[str]:
     argv = [SSH_BIN, "-i", str(key)]
     if details.cert_key:
         _write_private(cert, details.cert_key)
-        argv += ["-o", f"CertificateFile={cert}"]
     return argv + ["-o", f"UserKnownHostsFile={known_hosts}", "-o", "StrictHostKeyChecking=yes",
                    "-o", "BatchMode=yes", "-o", f"ConnectTimeout={SSH_CONNECT_TIMEOUT_S}",
                    f"{details.username}@{details.ip}", remote]

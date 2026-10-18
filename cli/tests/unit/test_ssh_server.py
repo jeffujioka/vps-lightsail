@@ -25,7 +25,8 @@ from pathlib import Path
 argv = sys.argv[1:]
 opts = dict(argv[i + 1].split("=", 1) for i, a in enumerate(argv) if a == "-o")
 files = [Path(argv[argv.index("-i") + 1]), Path(opts["UserKnownHostsFile"])]
-files += [Path(opts["CertificateFile"])] if "CertificateFile" in opts else []
+cert_path = files[0].with_name(files[0].name + "-cert.pub")
+files += [cert_path] if cert_path.exists() else []
 Path(__file__).with_name("seen.json").write_text(json.dumps({{"argv": argv, "files": [p.read_text() for p in files],
     "modes": [oct(stat.S_IMODE(p.stat().st_mode)) for p in files]}}))
 time.sleep(float(os.environ["FAKE_SSH_SLEEP"]))
@@ -70,12 +71,23 @@ def test_one_session_with_the_temporary_key_certificate_and_known_hosts(fake_ssh
     got = seen()
     key = got["argv"][1]
     assert client.asked == [NAME]
-    assert got["argv"] == ["-i", key, "-o", f"CertificateFile={key}-cert.pub", "-o",
+    assert got["argv"] == ["-i", key, "-o",
                            f"UserKnownHostsFile={Path(key).with_name('known_hosts')}", "-o", "StrictHostKeyChecking=yes",
                            "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", f"ubuntu@{IP}", PROBE_COMMAND]
     assert got["files"] == [DETAILS.private_key + "\n", f"{IP} ssh-ed25519 AAAAHOST1\n{IP} ssh-rsa AAAAHOST2\n",
                             DETAILS.cert_key + "\n"]
     assert got["modes"] == ["0o600"] * 3 and not Path(key).parent.exists()      # gone after the probe (D8)
+
+
+def test_the_certificate_option_is_never_passed_explicitly_openssh_auto_discovers_it(fake_ssh):
+    """Regression test: ssh must never receive an explicit `CertificateFile=` option (real OpenSSH
+    mis-pairs it with -i and falls back to plain pubkey auth, which Lightsail rejects). The cert must
+    still land next to the identity file at the OpenSSH-conventional `<key>-cert.pub` path."""
+    seen = fake_ssh(stdout=HEALTHY)
+    assert SshServer(Client()).probe(NAME) == parse_probe_output(HEALTHY)
+    got = seen()
+    assert not any(a.startswith("CertificateFile=") for a in got["argv"])
+    assert got["files"][-1] == DETAILS.cert_key + "\n"          # still written to <key>-cert.pub, auto-discovered
 
 
 def test_ssh_exit_255_is_ssh_ok_false_with_its_reason(fake_ssh):
