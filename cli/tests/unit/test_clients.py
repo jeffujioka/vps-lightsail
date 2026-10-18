@@ -63,7 +63,7 @@ def test_fake_dir_scan_reads_devices_json_and_never_instantiates_zeroconf(tmp_pa
     assert isinstance(clients.scan.__self__, FakeDiscovery) and clients.scan() == []
     (tmp_path / "devices.json").write_text(json.dumps([{"name": "ShieldVPN", "ip": "127.0.0.1",
                                                         "port": 43121, "token": "fake-txt-token", "api": 2}]))
-    assert clients.scan() == [Device("ShieldVPN", "127.0.0.1", 43121, "fake-txt-token")]
+    assert clients.scan() == [Device("ShieldVPN", "127.0.0.1", 43121, "fake-txt-token", 2)]
 
 
 def test_without_fake_scan_is_mdns_with_the_configured_timeout(monkeypatch):           # R15 scan timeout

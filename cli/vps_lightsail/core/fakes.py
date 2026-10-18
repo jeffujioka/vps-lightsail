@@ -401,7 +401,7 @@ DEVICES_FILE = "devices.json"                     # index R7 / spec-01 §14 M3
 class FakeDiscovery:
     """mDNS stand-in for `--fake DIR` (index R7): re-reads PATH — a list of mDNS records
     `{"name", "ip", "port", "token", "api"}` — on every scan; a missing file means no device on
-    the LAN. The agent never touches Zeroconf in fake mode. (06c parses `api`.)"""
+    the LAN. The agent never touches Zeroconf in fake mode. (`api` missing → 1.)"""
 
     def __init__(self, path: Path) -> None:
         self.path = Path(path)
@@ -411,4 +411,5 @@ class FakeDiscovery:
             return []
         with locked(self.path):                   # FakeWorld.set_devices writes under the same lock
             records = read_json(self.path)
-        return [Device(r["name"], r["ip"], int(r["port"]), r.get("token")) for r in records]
+        return [Device(r["name"], r["ip"], int(r["port"]), r.get("token"), int(r.get("api") or 1))
+                for r in records]

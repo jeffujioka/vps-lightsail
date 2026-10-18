@@ -152,7 +152,7 @@ def test_fake_discovery_reads_devices_json_on_every_scan(tmp_path):         # in
     assert (DEVICES_FILE, disc.path, disc.scan()) == ("devices.json", path, [])          # missing → []
     path.write_text(json.dumps([{"name": "ShieldVPN", "ip": "127.0.0.1", "port": 43121,
                                  "token": "fake-txt-token", "api": 2}]))
-    assert disc.scan() == [Device("ShieldVPN", "127.0.0.1", 43121, "fake-txt-token")]
+    assert disc.scan() == [Device("ShieldVPN", "127.0.0.1", 43121, "fake-txt-token", 2)]
     path.write_text(json.dumps([{"name": "NoToken", "ip": "127.0.0.1", "port": 1}]))
     assert disc.scan() == [Device("NoToken", "127.0.0.1", 1, None)]
     path.write_text("[]")

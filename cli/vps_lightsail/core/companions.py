@@ -1,9 +1,11 @@
 """Companion disconnect before a stop (spec-05 §4, index R15). Pure core: no printing, never imports agent."""
 from __future__ import annotations
 
+import dataclasses
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
 from vps_lightsail.core.config import PeerSpec
 from vps_lightsail.core.operations import ProgressFn
@@ -33,8 +35,8 @@ class CompanionReport:
         return text if len(text) <= MAX_SUMMARY else text[:MAX_SUMMARY - 1] + "…"
 
 
-def token_for(peer_name: str, device: Device) -> str | None:
-    return os.environ.get(f"PEER_{peer_name.upper()}_TOKEN") or device.token
+def token_for(peer_name: str, device: Device, env: Mapping[str, str] | None = None) -> str | None:
+    return (os.environ if env is None else env).get(f"PEER_{peer_name.upper()}_TOKEN") or device.token
 
 
 def match_device(peer: PeerSpec, companions: list[PeerSpec],
@@ -71,3 +73,60 @@ def disconnect_companions(peers: list[PeerSpec], *,
                     (f"http_{r.status_code}" if r.status_code else "unreachable")))
         on_progress(f"{peer.name}: {out[-1][1]}")
     return CompanionReport(tuple(out))
+
+
+# --- spec-06 §5.2/§5.3 (plan 06c1): declarative companion resolution + the D15 guard ---------------
+
+V1_REFUSAL = "companion app is API v1 — update it (spec-04) to stage configs; nothing pushed"
+
+
+class CompanionError(Exception):
+    """A declarative companion cannot be used; str(e) is the note that follows "<peer>: "."""
+
+
+class CompanionNotFound(CompanionError):
+    pass
+
+
+class CompanionNoToken(CompanionError):
+    pass
+
+
+class CompanionV1(CompanionError):
+    pass
+
+
+class CompanionAmbiguous(CompanionError):
+    def __init__(self, names: Sequence[str]) -> None:
+        self.names = tuple(names)
+        super().__init__(f"several companions on mDNS ({', '.join(self.names)}) — set mdns_name")
+
+
+class DiscoveryLike(Protocol):
+    def scan(self) -> list[Device]: ...
+
+
+def v1_refusal(peer_name: str) -> str:
+    return f"{peer_name}: {V1_REFUSAL}"                      # spec-06 §5.3 result text
+
+
+def require_v2(peer_name: str, device: Device) -> None:
+    """D15: refuse before anything is sent — a v1 companion would activate on POST /config."""
+    if device.api < 2:
+        raise CompanionV1(V1_REFUSAL)
+
+
+def resolve_companion(peer: PeerSpec, discovery: DiscoveryLike | Callable[[], list[Device]],
+                      env: Mapping[str, str]) -> Device:
+    """mDNS scan (index R15: operations.companion_scan_seconds). Pick the instance named
+    peer.mdns_name, else the only one found. Token: env PEER_<NAME>_TOKEN, else TXT token."""
+    devices = (discovery if callable(discovery) else discovery.scan)()
+    hit = match_device(peer, [peer], devices)
+    if hit == "ambiguous":
+        raise CompanionAmbiguous([d.name for d in devices])
+    if isinstance(hit, str):
+        raise CompanionNotFound("not found on mDNS")
+    token = token_for(peer.name, hit, env)
+    if not token:
+        raise CompanionNoToken(f"no token (set PEER_{peer.name.upper()}_TOKEN)")
+    return dataclasses.replace(hit, token=token)
