@@ -37,7 +37,7 @@ class CompanionStatus:
 
 def _post(device: Device, path: str, token: str, *, content: str | None = None,
           params: dict[str, str] | None = None, conflict: str | None = None) -> PushResult:
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {"Authorization": f"Bearer {token}"} if token else {}   # a trailing-space header is illegal
     if content is not None:
         headers["Content-Type"] = "text/plain"
     try:
@@ -68,8 +68,9 @@ def connect_device(device: Device, token: str) -> PushResult:
 
 def disconnect_device(device: Device, token: str) -> PushResult:
     url = f"http://{device.ip}:{device.port}/disconnect"
+    headers = {"Authorization": f"Bearer {token}"} if token else {}   # a trailing-space header is illegal
     try:
-        resp = httpx.post(url, headers={"Authorization": f"Bearer {token}"}, timeout=POST_TIMEOUT_S)
+        resp = httpx.post(url, headers=headers, timeout=POST_TIMEOUT_S)
         return PushResult(device=device, success=resp.status_code == 200, status_code=resp.status_code,
                           error=None if resp.status_code == 200 else resp.text)
     except httpx.HTTPError as e:

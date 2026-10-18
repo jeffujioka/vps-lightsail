@@ -101,6 +101,22 @@ def test_get_status_none_on_v1_or_garbage(seen, code, body, caplog):
     assert TOKEN not in caplog.text
 
 
+def test_push_config_empty_token_omits_auth_header_instead_of_crashing(seen):
+    """06d3 review fix: _post() must not send 'Bearer ' (LocalProtocolError) for a falsy token."""
+    calls, _ = seen
+    r = push_config(DEV, CONF, "")
+    assert r.success
+    assert "authorization" not in calls[0].headers
+
+
+def test_disconnect_device_empty_token_omits_auth_header_instead_of_crashing(seen):
+    """06d3 review fix: disconnect_device() must not send 'Bearer ' for a falsy token."""
+    calls, _ = seen
+    r = push.disconnect_device(DEV, "")
+    assert r.success
+    assert "authorization" not in calls[0].headers
+
+
 def test_get_status_none_on_network_error(monkeypatch):
     def refuse(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)
