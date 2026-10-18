@@ -66,7 +66,7 @@ class MainActivity : AppCompatActivity() {
             })
         } else if (configStore.lastConfig != null) {
             startService(Intent(this, VpnControlService::class.java).apply {
-                action = VpnControlService.ACTION_RECONNECT
+                action = VpnControlService.ACTION_CONNECT
             })
         }
     }

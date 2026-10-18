@@ -11,8 +11,8 @@ android {
         applicationId = "com.jeffujioka.vpslightsail.android"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "2.0-api2"
     }
 
     buildTypes {
