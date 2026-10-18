@@ -28,7 +28,7 @@ from .core.fakes import DEVICES_FILE, FakeDiscovery, FakeServer, fake_factory
 from .core.lightsail import (Boto3Lightsail, InstanceInfo, LightsailClient, LightsailError, LightsailFactory,
                              boto3_factory, locate_instance)
 from .core.operations import OperationFailed, OperationRejected
-from .core.peers import is_connected, peer_conf, peer_ip
+from .core.peers import PeerCommandError, is_connected, peer_conf, peer_ip
 from .core.provision import DestroyIncomplete, DestroyReport, InstanceExists, repair_flow
 from .core.server import ProbeResult, ServerAdmin, ServerProbe, SshServer, SshServerAdmin
 
@@ -39,7 +39,10 @@ REGIONS = {
     "ap-northeast-1": "Tokyo, Japan",
 }
 
-FAKE_OK = frozenset({"setup", "teardown", "repair", "stop"})   # --fake refuses the rest (no AWS); 06d2 adds export/push
+FAKE_OK = frozenset({"setup", "teardown", "repair", "stop", "export", "push"})   # --fake supports no AWS commands
+# get_access_details/list_instances are not mutating: boto errors reach the CLI unwrapped (index R6)
+CLI_ERRORS = (OperationRejected, OperationFailed, LightsailError, PeerCommandError, ClientError, BotoCoreError,
+              ValueError, OSError)
 
 @dataclasses.dataclass(frozen=True)
 class Backend:                                   # the test seam: AWS + SSH + mDNS, or the --fake world
@@ -74,7 +77,8 @@ def _context(args: argparse.Namespace) -> tuple[AgentConfig, str, Backend]:
 
 def _ns(**kw: object) -> argparse.Namespace:
     return argparse.Namespace(**{"fake": None, "config": None, "force": False, "stage": False,
-                                 "dry_run": False, "no_disconnect": False, "timeout": None, **kw})
+                                 "dry_run": False, "no_disconnect": False, "timeout": None,
+                                 "peer": None, "qr": False, **kw})
 
 def _env_token(device: Device) -> str | None:
     key = "".join(c if c.isalnum() else "_" for c in device.name).upper()
@@ -116,6 +120,8 @@ EXAMPLES:
   vps-lightsail setup --region us-east-1     # create VPN in Virginia
   vps-lightsail push                         # scan + interactive device selection + push
   vps-lightsail push --device 192.168.1.50   # push to specific device (skip scan)
+  vps-lightsail push --peer shield           # re-send the Shield's config
+  vps-lightsail export --qr                   # rewrite dist/*-vpn.conf + iPhone QR
   vps-lightsail status                       # show WireGuard peers
   vps-lightsail stop                         # disconnect devices + stop server (keeps config)
   vps-lightsail start                        # start server again, same IP and keys
@@ -142,13 +148,24 @@ EXAMPLES:
     start_p.add_argument("--region", default=os.environ.get("AWS_REGION", "sa-east-1"))
     start_p.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "personal"))
 
-    push_p = sub.add_parser("push", help="Scan network + push config to devices")
-    push_p.add_argument("--token", help="Bearer token (or set SHIELD_VPN_TOKEN)")
-    push_p.add_argument("--device", help="Device IP[:port] (skip mDNS scan)")
-    push_p.add_argument("--conf", type=Path, help="Path to .conf file (default: auto-generate from server)")
-    push_p.add_argument("--timeout", type=float, default=5.0, help="mDNS scan timeout in seconds")
+    push_p = sub.add_parser("push", help="Push a peer config: --peer NAME (configured, no server change) or a new ad-hoc peer")
+    push_p.add_argument("--peer", help="Configured peer: its config from the server's keys (idempotent)")
+    push_p.add_argument("--stage", action="store_true", help="Store without activating (companion API v2 only)")
+    push_p.add_argument("--token", help="Bearer token (beats PEER_<NAME>_TOKEN, SHIELD_VPN_TOKEN[_<DEVICE>], TXT)")
+    push_p.add_argument("--device", help="Device IP[:port] for ad-hoc pushes (skip mDNS scan)")
+    push_p.add_argument("--conf", type=Path, help="Push this .conf file instead of one built from the server")
+    push_p.add_argument("--config", help="Agent YAML with the peers (default: shield companion + iphone QR)")
+    push_p.add_argument("--timeout", type=float, default=None,
+                        help="mDNS scan seconds (default: operations.companion_scan_seconds)")
     push_p.add_argument("--region", default=os.environ.get("AWS_REGION", "sa-east-1"))
     push_p.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "personal"))
+
+    export_p = sub.add_parser("export", help="Write dist/<peer>-vpn.conf from the running server (replaces fetch-config.sh)")
+    export_p.add_argument("--peer", help="Only this configured peer")
+    export_p.add_argument("--qr", action="store_true", help="Also print the QR code of qr peers")
+    export_p.add_argument("--config", help="Agent YAML with the peers (default: shield companion + iphone QR)")
+    export_p.add_argument("--region", default=os.environ.get("AWS_REGION", "sa-east-1"))
+    export_p.add_argument("--profile", default=os.environ.get("AWS_PROFILE", "personal"))
 
     status_p = sub.add_parser("status", help="Show WireGuard peers and handshake info")
     status_p.add_argument("--region", default=os.environ.get("AWS_REGION", "sa-east-1"))
@@ -178,6 +195,7 @@ EXAMPLES:
         "stop": cmd_stop,
         "start": cmd_start,
         "push": cmd_push,
+        "export": cmd_export,
         "status": cmd_status,
         "scan": cmd_scan,
         "health": cmd_health,
@@ -297,6 +315,78 @@ def _push_companion(peer: PeerSpec, conf: str, devices: _Devices, *, activate: b
     if not ok:
         print(f"  💾 {peer.name}: config kept in {_save(peer.name, conf)}")
     return ok
+
+def _peer_spec(cfg: AgentConfig, name: str) -> PeerSpec:
+    for p in cfg.peers:
+        if p.name == name:
+            return p
+    _fail(f"unknown peer {name!r}; configured: {', '.join(p.name for p in cfg.peers)}",
+          hint="pass --config PATH for other peers")
+
+
+def _locate(cfg: AgentConfig, region: str, backend: Backend) -> tuple[str, InstanceInfo]:
+    regions = [region, *(r for r in cfg.regions if r != region)]
+    hit = locate_instance(backend.factory, regions, cfg.instance_name)
+    if hit is None:
+        _fail(f"no VPN server: instance {cfg.instance_name} not found in {', '.join(regions)}",
+              hint="create one with: vps-lightsail setup")
+    return hit
+
+
+def _endpoint(backend: Backend, where: str, info: InstanceInfo, cfg: AgentConfig) -> str:
+    """The address setup wrote into the confs: the attached static IP, else the instance IP."""
+    attached = [s.ip for s in backend.factory(where).list_static_ips() if s.attached_to == cfg.instance_name]
+    ip = attached[0] if attached else info.public_ip
+    if not ip:
+        _fail(f"instance {cfg.instance_name} in {where} has no public IP yet")
+    return ip
+
+
+def _material(cfg: AgentConfig, region: str, backend: Backend, names: list[str]):
+    where, info = _locate(cfg, region, backend)
+    if info.state != "running":
+        _fail(f"instance {cfg.instance_name} in {where} is {info.state}", hint="start it with: vps-lightsail start")
+    endpoint = _endpoint(backend, where, info, cfg)
+    return backend.admin_for(where).fetch_material(cfg.instance_name, names), endpoint
+
+
+def cmd_export(args: argparse.Namespace) -> None:
+    """spec-06 §7.2: fetch_material → dist/<name>-vpn.conf; --qr prints the QR of qr peers."""
+    cfg, region, backend = _context(args)
+    specs = [_peer_spec(cfg, args.peer)] if args.peer else list(cfg.peers)
+    try:
+        material, endpoint = _material(cfg, region, backend, [p.name for p in specs])
+        confs = [(p, peer_conf(material, cfg, p.name, endpoint)) for p in specs]
+    except CLI_ERRORS as e:
+        _fail(f"export failed: {e}")
+    for p, conf in confs:
+        print(f"📋 {p.name}: {_save(p.name, conf)}")
+        if args.qr and p.type == "qr":
+            _print_qr(p.name, conf)
+    print(f"✅ {len(confs)} config(s) exported — server {endpoint}")
+
+
+def _push_declarative(args: argparse.Namespace) -> None:
+    """spec-06 §7.3 --peer: that peer's conf from fetch_material; no server change; idempotent."""
+    cfg, region, backend = _context(args)
+    peer = _peer_spec(cfg, args.peer)
+    try:
+        if args.conf:
+            conf = Path(args.conf).read_text()
+        else:
+            material, endpoint = _material(cfg, region, backend, [peer.name])
+            conf = peer_conf(material, cfg, peer.name, endpoint)
+    except CLI_ERRORS as e:
+        _fail(f"push failed: {e}")
+    if peer.type == "qr":
+        path = _save(peer.name, conf)
+        _print_qr(peer.name, conf)
+        print(f"📋 {peer.name} is a QR peer — scan the code above or import {path}")
+        return
+    devices = _devices(args, cfg, backend)                                   # R15 scan timeout
+    if not _push_companion(peer, conf, devices, activate=not args.stage, token=args.token):
+        sys.exit(1)                                  # 06d1 already saved dist/<name>-vpn.conf and said so
+
 
 def _disconnect(cfg: AgentConfig, devices: _Devices) -> Callable[[], None]:
     def hook() -> None:
@@ -480,7 +570,7 @@ def _peer_lines(result: ProbeResult, now: int) -> list[str]:
                     for ip in sorted(result.wg_conf_duplicates)]
 
 
-def cmd_push(args: argparse.Namespace) -> None:
+def _push_legacy_pem(args: argparse.Namespace) -> None:
     key_path = Path.home() / ".ssh" / "vps-vpn.pem"
     if not key_path.exists():
         print("Error: no VPN running (no SSH key at ~/.ssh/vps-vpn.pem)", file=sys.stderr)
@@ -499,6 +589,17 @@ def cmd_push(args: argparse.Namespace) -> None:
 
     vps = infra.VPSInfo(server_ip=server_ip, key_path=key_path, region=args.region)
     _push_to_devices(args, vps)
+
+
+def cmd_push(args: argparse.Namespace) -> None:
+    if not args.peer:
+        args.timeout = args.timeout or 5.0            # the legacy body reads it unconditionally
+        _push_legacy_pem(args)
+        return
+    if args.device:
+        _fail("--device is for ad-hoc pushes; a configured companion is found by its mdns_name",
+              hint=f"push the file instead: vps-lightsail push --conf dist/{args.peer}-vpn.conf --device IP")
+    _push_declarative(args)
 
 
 def _push_to_devices(args: argparse.Namespace, vps: infra.VPSInfo) -> None:
