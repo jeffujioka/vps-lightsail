@@ -6,7 +6,8 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from vps_lightsail.core.server import PeerStatus
+    from vps_lightsail.core.config import AgentConfig
+    from vps_lightsail.core.server import ClientMaterial, PeerStatus
 
 CONNECTED_MAX_AGE_S = 180        # 2026-09-25: an active client re-handshakes about every 2 min
 MAX_PEER_INDEX = 252             # peers[252] ↔ 10.8.0.254; 10.8.0.1 is the server
@@ -51,3 +52,27 @@ def unknown_peer_name(ip: str) -> str:
 def name_for_ip(ip: str, names: Sequence[str]) -> str:
     """The configured name for `ip` by position (names[i] ↔ peer_ip(i)), else unknown_peer_name(ip)."""
     return {peer_ip(i): name for i, name in enumerate(names)}.get(ip) or unknown_peer_name(ip)
+
+
+def build_conf(private_key: str, peer_ip: str, server_public: str, endpoint: str) -> str:
+    return f"""[Interface]
+PrivateKey = {private_key}
+Address = {peer_ip}/32
+DNS = 1.1.1.1
+
+[Peer]
+PublicKey = {server_public}
+Endpoint = {endpoint}:51820
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25"""
+
+
+def peer_conf(material: ClientMaterial, cfg: AgentConfig, name: str, endpoint: str) -> str:
+    """spec-06 §5.1: the client .conf of `name`; its IP is positional (index in cfg.peers)."""
+    names = [p.name for p in cfg.peers]
+    if name not in names:
+        raise ValueError(f"unknown peer: {name}")
+    key = material.private_keys.get(name)
+    if not key:
+        raise ValueError(f"no key material for peer {name}")
+    return build_conf(key, peer_ip(names.index(name)), material.server_public, endpoint)
