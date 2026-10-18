@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from zeroconf import ServiceBrowser, ServiceStateChange, Zeroconf
 
@@ -17,7 +17,7 @@ class Device:
     name: str
     ip: str
     port: int
-    token: str | None = None
+    token: str | None = field(default=None, repr=False)
     api: int = 1
 
 

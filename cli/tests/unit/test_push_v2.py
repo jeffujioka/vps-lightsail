@@ -16,6 +16,16 @@ TOKEN = "sentinel-token-06c1"
 CONF = "[Interface]\nPrivateKey = k\nAddress = 10.8.0.2/32\n"
 
 
+def test_device_repr_hides_token():
+    """06c1 review fix: Device.token must not leak into repr()/logs."""
+    secret = "super-secret-token-06c1-fix"
+    dev = Device(name="x", ip="1.2.3.4", port=1, token=secret)
+    r = repr(dev)
+    assert secret not in r
+    assert "name='x'" in r
+    assert dev.token == secret
+
+
 @pytest.fixture
 def seen(monkeypatch):
     """Route push.py's module-level httpx.post/get through an httpx.MockTransport."""
