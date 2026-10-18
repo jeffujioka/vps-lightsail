@@ -7,6 +7,8 @@ import android.content.Intent
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.jeffujioka.vpslightsail.api.CompanionApi
+import com.jeffujioka.vpslightsail.api.HttpRouter
 import com.jeffujioka.vpslightsail.discovery.MdnsAnnouncer
 import com.jeffujioka.vpslightsail.persistence.ConfigStore
 import com.jeffujioka.vpslightsail.server.AuthMiddleware
@@ -34,11 +36,9 @@ class VpnControlService : Service() {
         tunnel = WireGuardTunnel(this)
 
         val auth = AuthMiddleware(configStore.authToken)
-        httpServer = ConfigHttpServer(
-            port = HTTP_PORT,
-            auth = auth,
-            onConfigReceived = { configBody -> handleConfigReceived(configBody) }
-        )
+        // Interim (plan 04a2, D4): v2 routes on the v1 service — plan 04b rewrites this file.
+        val api = CompanionApi(tunnel, configStore, onChange = { broadcastState() })
+        httpServer = ConfigHttpServer(HTTP_PORT, HttpRouter(auth, api))
         try {
             httpServer.start()
             Log.i(TAG, "HTTP server started on port $HTTP_PORT")
@@ -71,28 +71,6 @@ class VpnControlService : Service() {
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
-
-    private fun handleConfigReceived(configBody: String) {
-        if (configBody.isBlank()) {
-            Log.i(TAG, "Empty config — disconnecting")
-            configStore.tunnelEnabled = false
-            configStore.lastConfig = null
-            tunnel.disconnect()
-            updateNotification("Waiting for config...")
-        } else {
-            Log.i(TAG, "Config received — starting tunnel")
-            configStore.lastConfig = configBody
-            configStore.tunnelEnabled = true
-            try {
-                tunnel.connect(configBody)
-                updateNotification("VPN Connected")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to connect: ${e.message}", e)
-                updateNotification("Connection failed: ${e.message}")
-            }
-            broadcastState()
-        }
-    }
 
     private fun disconnectOnly() {
         Log.i(TAG, "Disconnecting tunnel (keeping config for reconnect)")

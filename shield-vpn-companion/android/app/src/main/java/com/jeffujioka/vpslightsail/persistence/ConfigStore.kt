@@ -3,9 +3,10 @@ package com.jeffujioka.vpslightsail.persistence
 import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
+import com.jeffujioka.vpslightsail.api.StateStore
 import java.security.SecureRandom
 
-class ConfigStore(context: Context) {
+class ConfigStore(context: Context) : StateStore {
 
     private val prefs = EncryptedSharedPreferences.create(
         "shield_vpn_config",
@@ -27,13 +28,13 @@ class ConfigStore(context: Context) {
             prefs.edit().putString(KEY_AUTH_TOKEN, value).apply()
         }
 
-    var lastConfig: String?
+    override var lastConfig: String?
         get() = prefs.getString(KEY_LAST_CONFIG, null)
         set(value) {
             prefs.edit().putString(KEY_LAST_CONFIG, value).apply()
         }
 
-    var tunnelEnabled: Boolean
+    override var tunnelEnabled: Boolean
         get() = prefs.getBoolean(KEY_TUNNEL_ENABLED, false)
         set(value) {
             prefs.edit().putBoolean(KEY_TUNNEL_ENABLED, value).apply()
