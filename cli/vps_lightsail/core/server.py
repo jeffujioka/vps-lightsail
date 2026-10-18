@@ -258,6 +258,8 @@ class SshServerAdmin(SshServer):
             done = self._ssh(details, "true", timeout=SSH_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             return "ssh timed out"
+        except OSError as e:
+            return f"ssh not available: {e}"
         return None if done.returncode == 0 else f"ssh exit {done.returncode}"
 
     def wait_ssh(self, instance_name: str, timeout: float = 240) -> None:
@@ -277,6 +279,8 @@ class SshServerAdmin(SshServer):
                              timeout=timeout, extra=("-o", "ServerAliveInterval=15"))
         except subprocess.TimeoutExpired:
             raise ProvisionError(f"provision.sh timed out after {timeout:g} s") from None
+        except OSError as e:
+            raise ProvisionError(f"ssh is not available: {e}") from None
         if done.returncode != 0:
             tail = tuple(line for line in done.stderr.splitlines() if line.strip())[-PROVISION_TAIL_LINES:]
             log.error("provision.sh failed on %s (exit %d), stderr tail:\n%s", instance_name, done.returncode,
@@ -285,11 +289,14 @@ class SshServerAdmin(SshServer):
 
     def fetch_material(self, instance_name: str, peers: Sequence[str]) -> ClientMaterial:
         """One session (spec-06 §5.1); only ProvisionError (or an AWS error) leaves it."""
+        command = material_command(peers)                              # raises ValueError before any session
         details = self.client.get_access_details(instance_name)
         try:
-            done = self._ssh(details, material_command(peers), timeout=MATERIAL_TIMEOUT_S)
+            done = self._ssh(details, command, timeout=MATERIAL_TIMEOUT_S)
         except subprocess.TimeoutExpired:
             raise ProvisionError(f"fetching client configs timed out after {MATERIAL_TIMEOUT_S} s") from None
+        except OSError as e:
+            raise ProvisionError(f"ssh is not available: {e}") from None
         if done.returncode == 255:                                      # ssh's own failure
             raise ProvisionError(f"fetching client configs failed: {_last_line(done.stderr)}")
         try:

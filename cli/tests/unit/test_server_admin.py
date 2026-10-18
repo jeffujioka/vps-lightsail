@@ -113,6 +113,14 @@ def test_provision_failure_raises_provision_error_with_the_stderr_tail(ssh, capl
     assert "E: Unable to locate package wireguard" in caplog.text and K_SHIELD not in caplog.text
 
 
+@pytest.mark.parametrize("peers", [["Shield"], ["a;b"], ["server"], ["shield", "shield"], []])
+def test_fetch_material_rejects_bad_names_before_any_session(ssh, peers):   # mirrors provision's Review Focus 3
+    calls, client = ssh({}), Client()
+    with pytest.raises(ValueError, match="invalid peer names"):
+        SshServerAdmin(client).fetch_material(NAME, peers)
+    assert client.asked == [] and calls() == []
+
+
 def test_fetch_material_is_one_session_and_parses_the_keys(ssh):
     calls = ssh({"stdout": f"{PUB}\n--- shield\n{K_SHIELD}\n--- iphone\n{K_IPHONE}\n"})
     client = Client()
@@ -134,3 +142,15 @@ def test_run_passes_stdin_and_returns_the_result(ssh):                 # 06d2's 
     calls = ssh({"exit": 3, "stdout": "out", "stderr": "err"})
     assert SshServerAdmin(Client()).run(NAME, "cat > /tmp/x", stdin="hello") == CommandResult(3, "out", "err")
     assert calls()[0]["stdin"] == "hello" and calls()[0]["argv"][-1] == "cat > /tmp/x"
+
+
+def test_provision_wraps_missing_ssh_binary_as_provision_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "SSH_BIN", str(tmp_path / "no-such-ssh"))
+    with pytest.raises(ProvisionError, match="ssh is not available"):
+        SshServerAdmin(Client()).provision(NAME, ["shield"])
+
+
+def test_wait_ssh_treats_missing_ssh_binary_as_not_yet(tmp_path, monkeypatch):
+    monkeypatch.setattr(server, "SSH_BIN", str(tmp_path / "no-such-ssh"))
+    with pytest.raises(WaitTimeout, match=f"SSH on {NAME}"):
+        SshServerAdmin(Client(), clock=FakeClock(datetime.now(UTC))).wait_ssh(NAME, timeout=12)
