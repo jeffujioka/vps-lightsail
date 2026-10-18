@@ -144,3 +144,45 @@ def test_start_during_create_is_busy(agent_authed, fake_world, mqtt_watch, mqtt_
     mqtt_watch.wait_for(STATE, state_is("creating"), timeout=10)
     assert mqtt_watch.wait_for(RESULT, outcome("ok"), timeout=60).json()["message"].startswith("VPN ready at ")
     mqtt_watch.wait_for(STATE, state_is("healthy"), timeout=20)        # probing resumed after mark_provisioned
+
+
+REGION, REGION_SET = "vps_lightsail/config/region", "vps_lightsail/config/region/set"
+
+
+def region_result_is(ok):
+    return lambda m: m.json()["action"] == "config/region" and m.json()["ok"] is ok
+
+
+def test_region_select_persists_and_drives_the_next_create(                     # §9.2 row 7
+        agent_authed, fake_world, mqtt_watch, mqtt_as, clean_broker_auth):
+    fake_world.clear_instance()
+    fake_world.patch(static_ip=None, static_ips=[], transition_seconds=1)
+    boot(agent_authed, mqtt_watch)
+    ha = mqtt_as("homeassistant")
+    ha.publish(REGION_SET, "eu-west-1")
+    mqtt_watch.wait_for(REGION, lambda m: m.payload == b"eu-west-1", timeout=5)
+    ok = mqtt_watch.wait_for(RESULT, region_result_is(True), timeout=5).json()
+    assert (ok["outcome"], ok["message"]) == ("ok", "region for the next create set to eu-west-1")
+    ha.publish(REGION_SET, "bogus")                                              # snaps back
+    bad = mqtt_watch.wait_for(RESULT, region_result_is(False), timeout=5).json()
+    assert bad["outcome"] == "rejected" and bad["message"].startswith("unknown region bogus — allowed: ")
+    assert mqtt_watch.last(REGION).payload == b"eu-west-1"
+
+    assert agent_authed.sigterm() == 0                                           # restart keeps it
+    mqtt_watch.clear()
+    agent_authed.start()
+    mqtt_watch.wait_for(STATE, timeout=15)
+    late = Watcher(clean_broker_auth, username="e2e-observer", password=TEST_PASSWORDS["e2e-observer"])
+    try:
+        assert late.wait_for(REGION, retained=True, timeout=5).payload == b"eu-west-1"
+    finally:
+        late.close()
+    assert all(m.payload == b"eu-west-1" for m in mqtt_watch.all(REGION))       # no fallback republish
+
+    ha.press("create")
+    done = mqtt_watch.wait_for(RESULT, lambda m: m.json()["action"] == "create"
+                               and m.json()["outcome"] != "running", timeout=60).json()
+    assert done["outcome"] == "ok", done["message"]
+    world = fake_world.read()
+    assert world["region"] == "eu-west-1" and world["instance"] is not None
+    assert {c["region"] for c in fake_world.calls("create_instance")} == {"eu-west-1"}
