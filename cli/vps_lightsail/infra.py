@@ -1,18 +1,22 @@
-"""VPS infrastructure management via AWS CLI + SSH subprocess calls."""
+"""VPS infrastructure management: lifecycle shims over the core flows (spec-06 §7.2)."""
 
 from __future__ import annotations
 
-import json
+import dataclasses
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from .core import operations
 from .core.clock import SYSTEM_CLOCK
-from .core.lightsail import Boto3Lightsail, LightsailClient
-from .core.peers import next_free_peer_ip, parse_allowed_ips  # noqa: F401  re-exported (spec-01 §11)
-from .core.server import SshServer
+from .core.config import AgentConfig, default_config
+from .core.lightsail import (Boto3Lightsail, LightsailClient, LightsailFactory, boto3_factory,
+                             locate_instance)
+from .core.peers import build_conf, next_free_peer_ip, parse_allowed_ips  # noqa: F401  legacy names
+from .core.provision import CreateResult, DestroyReport, create_flow, destroy_flow
+from .core.server import ServerAdmin, SshServer, SshServerAdmin
 
 CLOCK = SYSTEM_CLOCK      # the clock start/stop hand to core.operations (tests use a FakeClock)
 
@@ -24,6 +28,57 @@ KEY_NAME = "vps-vpn-key"
 STATIC_IP_NAME = "vps-vpn-static-ip"
 BLUEPRINT = "ubuntu_24_04"
 BUNDLE = "nano_3_1"
+
+DIST = Path("dist")                                   # client configs, relative to the CWD (gitignored)
+LEGACY_PEM = Path.home() / ".ssh" / "vps-vpn.pem"     # pre-06 shell setup's key; only teardown deletes it
+
+
+def _noop() -> None:
+    return None
+
+
+def say(step: str) -> None:
+    print(f"▶ {step}…")
+
+
+def cli_config(cfg: AgentConfig | None, region: str) -> AgentConfig:
+    """--config (or the D13 defaults) with --region applied; an unlisted region is appended so the
+    create precondition and the orphan scan cover it too."""
+    cfg = cfg or default_config()
+    regions = cfg.regions if region in cfg.regions else (*cfg.regions, region)
+    return dataclasses.replace(cfg, region=region, regions=regions)
+
+
+def setup(region: str = DEFAULT_REGION, profile: str = DEFAULT_PROFILE, *, cfg: AgentConfig | None = None,
+          force: bool = False, factory: LightsailFactory | None = None, admin: ServerAdmin | None = None,
+          before_delete: Callable[[], None] = _noop) -> CreateResult:
+    """create_flow. Raises InstanceExists when the instance exists in any region, unless force:
+    then destroy_flow runs to completion (wait_instance_gone included) where it was found."""
+    cfg, factory = cli_config(cfg, region), factory or boto3_factory(profile)
+    found = locate_instance(factory, cfg.regions, cfg.instance_name) if force else None
+    if found:
+        print(f"▶ --force: destroying existing instance in {found[0]}…")
+        destroy_flow(factory, cfg, found[0], before_delete=before_delete, on_progress=say)
+    return create_flow(factory, admin or SshServerAdmin(factory(region)), cfg, region, on_progress=say)
+
+
+def teardown(region: str = DEFAULT_REGION, profile: str = DEFAULT_PROFILE, *, cfg: AgentConfig | None = None,
+             factory: LightsailFactory | None = None,
+             before_delete: Callable[[], None] = _noop) -> DestroyReport:
+    """destroy_flow — the only deletion path — then our local client material."""
+    report = destroy_flow(factory or boto3_factory(profile), cli_config(cfg, region), region,
+                          before_delete=before_delete, on_progress=say)
+    for path in remove_local_material():
+        print(f"  🗑  removed {path}")
+    return report
+
+
+def remove_local_material() -> list[Path]:
+    """Only ours: dist/*-vpn.conf, the legacy ./mac-vpn.conf and the legacy PEM."""
+    gone = [p for p in (*sorted(DIST.glob("*-vpn.conf")), Path("mac-vpn.conf"), LEGACY_PEM) if p.exists()]
+    for path in gone:
+        path.unlink()
+    return gone
 
 
 @dataclass
@@ -42,148 +97,11 @@ def aws(args: list[str], profile: str, region: str) -> str:
     return run(["aws", "lightsail", *args, "--profile", profile, "--region", region])
 
 
-def setup(region: str = DEFAULT_REGION, profile: str = DEFAULT_PROFILE) -> VPSInfo:
-    """Create VPS + WireGuard. Returns server info."""
-    az = f"{region}a"
-    key_path = Path.home() / ".ssh" / "vps-vpn.pem"
-    script_dir = Path(__file__).resolve().parent.parent.parent
-
-    print(f"▶ Creating SSH key pair...")
-    keypair_json = aws(
-        ["create-key-pair", "--key-pair-name", KEY_NAME, "--output", "json"],
-        profile, region,
-    )
-    data = json.loads(keypair_json)
-    key_path.write_text(data["privateKeyBase64"])
-    key_path.chmod(0o600)
-
-    print(f"▶ Creating Lightsail instance ({region})...")
-    aws([
-        "create-instances",
-        "--instance-names", INSTANCE_NAME,
-        "--availability-zone", az,
-        "--blueprint-id", BLUEPRINT,
-        "--bundle-id", BUNDLE,
-        "--key-pair-name", KEY_NAME,
-    ], profile, region)
-
-    print("▶ Waiting for instance...")
-    while True:
-        state = aws([
-            "get-instance",
-            "--instance-name", INSTANCE_NAME,
-            "--query", "instance.state.name",
-            "--output", "text",
-        ], profile, region)
-        if state == "running":
-            break
-        time.sleep(5)
-
-    print("▶ Allocating static IP...")
-    aws(["allocate-static-ip", "--static-ip-name", STATIC_IP_NAME], profile, region)
-    aws([
-        "attach-static-ip",
-        "--static-ip-name", STATIC_IP_NAME,
-        "--instance-name", INSTANCE_NAME,
-    ], profile, region)
-
-    server_ip = aws([
-        "get-static-ip",
-        "--static-ip-name", STATIC_IP_NAME,
-        "--query", "staticIp.ipAddress",
-        "--output", "text",
-    ], profile, region)
-    print(f"▶ Static IP: {server_ip}")
-
-    print("▶ Opening firewall ports...")
-    aws([
-        "put-instance-public-ports",
-        "--instance-name", INSTANCE_NAME,
-        "--port-infos",
-        '[{"fromPort":22,"toPort":22,"protocol":"tcp"},{"fromPort":51820,"toPort":51820,"protocol":"udp"}]',
-    ], profile, region)
-
-    print("▶ Waiting for SSH...")
-    _wait_for_ssh(server_ip, key_path)
-
-    print("▶ Configuring WireGuard on server...")
-    provision_script = script_dir / "provision.sh"
-    with open(provision_script) as f:
-        subprocess.run(
-            ["ssh", "-i", str(key_path), "-o", "StrictHostKeyChecking=no",
-             f"ubuntu@{server_ip}", "sudo bash"],
-            stdin=f, check=True, capture_output=True,
-        )
-
-    print("▶ Fetching client configs...")
-    fetch_script = script_dir / "fetch-config.sh"
-    run(["bash", str(fetch_script), server_ip, str(key_path)])
-
-    info = VPSInfo(server_ip=server_ip, key_path=key_path, region=region)
-    print(f"\n✅ VPN ready! Server: {server_ip} ({region})")
-    return info
-
-
-def teardown(region: str = DEFAULT_REGION, profile: str = DEFAULT_PROFILE) -> None:
-    """Destroy all Lightsail resources."""
-    print(f"▶ Destroying resources in {region}...")
-
-    # Best-effort: ignore errors if resources don't exist
-    try:
-        aws(["detach-static-ip", "--static-ip-name", STATIC_IP_NAME], profile, region)
-    except subprocess.CalledProcessError:
-        pass
-    try:
-        aws(["release-static-ip", "--static-ip-name", STATIC_IP_NAME], profile, region)
-    except subprocess.CalledProcessError:
-        pass
-    try:
-        aws(["delete-instance", "--instance-name", INSTANCE_NAME], profile, region)
-    except subprocess.CalledProcessError:
-        pass
-    try:
-        aws(["delete-key-pair", "--key-pair-name", KEY_NAME], profile, region)
-    except subprocess.CalledProcessError:
-        pass
-
-    key_path = Path.home() / ".ssh" / "vps-vpn.pem"
-    key_path.unlink(missing_ok=True)
-
-    conf_dir = Path(__file__).resolve().parent.parent.parent
-    for f in conf_dir.glob("*-vpn.conf"):
-        f.unlink()
-    (conf_dir / "mac-vpn.conf").unlink(missing_ok=True)
-
-    print("✅ All resources destroyed. No more charges.")
-
-
-def _instance_state(client: LightsailClient) -> str:
-    info = client.get_instance(INSTANCE_NAME)
-    if info is None:
-        raise RuntimeError(f"No instance {INSTANCE_NAME} in {client.region}")
-    return info.state
-
-
-def _wait_for_state(client: LightsailClient, target: str, timeout: int = 300) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if _instance_state(client) == target:
-            return
-        time.sleep(5)
-    raise TimeoutError(f"Instance did not reach '{target}' within {timeout}s")
-
-
-def _server_ip(client: LightsailClient) -> str:
-    ip = client.get_static_ip(STATIC_IP_NAME)
-    if ip is None:
-        raise RuntimeError(f"No static IP {STATIC_IP_NAME} in {client.region}")
-    return ip
-
-
-def stop(region: str = DEFAULT_REGION, profile: str = DEFAULT_PROFILE) -> None:
+def stop(region: str = DEFAULT_REGION, profile: str = DEFAULT_PROFILE, *,
+         client: LightsailClient | None = None) -> None:
     """Stop the instance, keeping disk, WireGuard keys and static IP. Still billed. Devices are not
     disconnected here: `cmd_stop` does that first (index R16 moves it onto the core in 06d)."""
-    client = Boto3Lightsail(region, profile)
+    client = client or Boto3Lightsail(region, profile)
     try:
         out = operations.stop(client, INSTANCE_NAME, on_progress=lambda m: print(f"  {m}"), clock=CLOCK)
     except (operations.OperationRejected, operations.OperationFailed) as e:
@@ -265,53 +183,3 @@ sed -i '/\\[Peer\\]/{{
          f"ubuntu@{server_ip}", "sudo bash -s"],
         input=remove_script, capture_output=True, text=True, check=True,
     )
-
-
-def list_peers(server_ip: str, key_path: Path) -> list[dict[str, str]]:
-    """List active WireGuard peers on the server. Returns list of {public_key, allowed_ips, latest_handshake, transfer}."""
-    output = run([
-        "ssh", "-i", str(key_path), "-o", "StrictHostKeyChecking=no",
-        f"ubuntu@{server_ip}", "sudo wg show wg0 dump",
-    ])
-    peers = []
-    for line in output.strip().splitlines()[1:]:  # skip interface line
-        parts = line.split("\t")
-        if len(parts) >= 4:
-            peers.append({
-                "public_key": parts[0],
-                "endpoint": parts[2],
-                "allowed_ips": parts[3],
-                "latest_handshake": parts[4] if len(parts) > 4 else "0",
-                "transfer_rx": parts[5] if len(parts) > 5 else "0",
-                "transfer_tx": parts[6] if len(parts) > 6 else "0",
-            })
-    return peers
-
-
-def build_conf(private_key: str, peer_ip: str, server_public: str, endpoint: str) -> str:
-    return f"""[Interface]
-PrivateKey = {private_key}
-Address = {peer_ip}/32
-DNS = 1.1.1.1
-
-[Peer]
-PublicKey = {server_public}
-Endpoint = {endpoint}:51820
-AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25"""
-
-
-def _wait_for_ssh(server_ip: str, key_path: Path, timeout: int = 120) -> None:
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        try:
-            run([
-                "ssh", "-i", str(key_path),
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "ConnectTimeout=5",
-                f"ubuntu@{server_ip}", "echo ok",
-            ])
-            return
-        except subprocess.CalledProcessError:
-            time.sleep(5)
-    raise TimeoutError(f"SSH to {server_ip} timed out after {timeout}s")

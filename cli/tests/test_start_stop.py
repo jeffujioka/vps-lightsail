@@ -32,7 +32,8 @@ def world(tmp_path, monkeypatch):
         monkeypatch.setattr(infra, "SshServer", lambda client: FakeServer(tmp_path / "server.json"))
         monkeypatch.setattr(infra, "CLOCK", FakeClock(datetime(2026, 9, 26, 10, 0, tzinfo=UTC)))
         for name in ("aws", "run", "_wait_for_ssh"):             # no subprocess, no ~/.ssh/vps-vpn.pem
-            monkeypatch.setattr(infra, name, lambda *a, _n=name, **k: pytest.fail(f"start/stop called infra.{_n}"))
+            monkeypatch.setattr(infra, name, lambda *a, _n=name, **k: pytest.fail(f"start/stop called infra.{_n}"),
+                                raising=False)
         return lambda: [c["method"] for c in json.loads(path.read_text())["calls"]]
     return make
 
