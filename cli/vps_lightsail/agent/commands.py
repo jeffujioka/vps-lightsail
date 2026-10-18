@@ -82,6 +82,7 @@ class CommandRunner:
         self._timer: threading.Timer | None = None
         self._last_error: str | None = None
         self._last_progress: str | None = None
+        self._provisioned = True
         self._generation = 0
         self._window_opened = False
         self._window_until: float | None = None
@@ -93,7 +94,13 @@ class CommandRunner:
     def snapshot(self) -> OpSnapshot:
         with self._lock:
             return OpSnapshot(operation=self._inflight.operation if self._inflight else None,
-                              last_error=self._last_error)
+                              last_error=self._last_error, provisioned=self._provisioned)
+
+    def mark_provisioned(self) -> None:
+        """spec-06 §3.1 step 8 / Q9: the running create has provisioned WireGuard; probing may resume."""
+        with self._lock:
+            if self._inflight is not None and self._inflight.operation == "create":
+                self._provisioned = True
 
     def open_recovery_window(self) -> None:
         with self._lock:
@@ -143,6 +150,7 @@ class CommandRunner:
         self._generation += 1
         self._last_error = self._last_progress = None            # M10: only an accepted command clears it
         self._inflight = InFlight(cmd.action, cmd.operation, now, self._clock.monotonic(), self._generation)
+        self._provisioned = cmd.operation != "create"   # index §5.4: accepting "create" → False
         self._idle.clear()
         cap = f"timeout: {cmd.action} exceeded {cmd.timeout_s:g}s"
         self._timer = threading.Timer(cmd.timeout_s, self._finish,          # R8: one Timer per command
@@ -197,6 +205,7 @@ class CommandRunner:
         if self._timer is not None:
             self._timer.cancel()
         self._inflight = self._timer = None
+        self._provisioned = True   # outside a create the probe always runs
         self._idle.set()
 
     def recover(self, retained: dict | None) -> None:            # §2.7: ok null = a previous agent died

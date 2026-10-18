@@ -25,9 +25,10 @@ MISCONFIGURED = frozenset({"NoCredentialsError", "AccessDenied", "AccessDeniedEx
 
 
 def should_probe(aws_state: str | None, ops: OpSnapshot) -> bool:
-    """Probe only a running instance, and never while a stop is in flight: the instance is going
-    away and the probe would only time out (spec-05 §2.6; index §5.4)."""
-    return aws_state == "running" and ops.operation != "stop"
+    """Probe only a running instance; never while a stop is in flight (spec-05 §2.6), nor while a create
+    has not provisioned WireGuard yet (spec-06 §3.1 / Q9: the box is still being set up)."""
+    return (aws_state == "running" and ops.operation != "stop"
+            and not (ops.operation == "create" and not ops.provisioned))
 
 
 def _code(e: Exception) -> str:
