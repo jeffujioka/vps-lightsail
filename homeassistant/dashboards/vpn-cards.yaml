@@ -91,6 +91,41 @@ usage:
          entity: sensor.vps_lightsail_cost_month, name: Cost month (est.), icon: mdi:currency-usd}
       - {type: custom:bubble-card, card_type: button, button_type: state,
          entity: sensor.vps_lightsail_cost_projected, name: Projected (est.), icon: mdi:chart-line}
+usage@dashboard:    # plan 06e: spec-06 §8.2 "Server" (Create/Destroy ask first, D19); Start/Stop stay right under the state (spec-05 §5.2)
+  - type: grid
+    title: Server
+    cards:
+      - type: tile
+        entity: select.vps_lightsail_region_select
+        name: Region for next create
+        features: [{type: select-options}]
+      - type: tile
+        entity: button.vps_lightsail_create
+        name: Create VPN server
+        icon: mdi:cloud-plus
+        visibility:
+          - {condition: state, entity: sensor.vps_lightsail_state, state: nonexistent}
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target: {entity_id: button.vps_lightsail_create}
+          confirmation:
+            text: Create the VPN server in the selected region? Billing starts (~$5/month, ~$0.007/h).
+      - type: tile
+        entity: button.vps_lightsail_destroy
+        name: Destroy VPN server
+        icon: mdi:cloud-remove
+        visibility:
+          - {condition: state, entity: sensor.vps_lightsail_state, state_not: nonexistent}
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target: {entity_id: button.vps_lightsail_destroy}
+          confirmation:
+            text: Destroy the VPN server? Every device config (Shield, iPhone QR) stops working. Stops all charges.
+      - type: tile
+        entity: sensor.vps_lightsail_last_result     # progress text + ok/null/false (spec-05)
+        name: Last command
 peers:
   - type: custom:bubble-card
     card_type: separator
@@ -106,4 +141,50 @@ peers:
          entity: binary_sensor.vps_lightsail_peer_shield, name: Shield, icon: mdi:television}
       - {type: custom:bubble-card, card_type: button, button_type: state,
          entity: binary_sensor.vps_lightsail_peer_iphone, name: iPhone, icon: mdi:cellphone}
-qr: []              # SLOT spec-06 (one picture-entity per `qr` peer)
+peers@dashboard:    # plan 06e: spec-06 §8.2 "Devices" (hidden while nonexistent, the QR with it)
+  - type: grid
+    title: Devices
+    visibility:
+      - {condition: state, entity: sensor.vps_lightsail_state, state_not: nonexistent}
+    cards:
+      - type: tile
+        entity: binary_sensor.vps_lightsail_peer_shield
+        name: Shield
+      - type: button
+        entity: button.vps_lightsail_peer_shield_connect
+        name: Connect Shield
+        icon: mdi:lan-connect
+        tap_action: {action: perform-action, perform_action: button.press,
+                     target: {entity_id: button.vps_lightsail_peer_shield_connect}}
+      - type: button
+        entity: button.vps_lightsail_peer_shield_disconnect
+        name: Disconnect Shield
+        icon: mdi:lan-disconnect
+        tap_action: {action: perform-action, perform_action: button.press,
+                     target: {entity_id: button.vps_lightsail_peer_shield_disconnect}}
+      - type: picture-entity
+        entity: image.vps_lightsail_peer_iphone_qr
+        name: iPhone — scan in WireGuard app (+ → Create from QR code)
+        show_state: false
+peers@popup:        # plan 06e: spec-06 §8.2, the home pop-up gets only the Connect/Disconnect row
+  - type: conditional
+    conditions:
+      - {condition: state, entity: sensor.vps_lightsail_state, state_not: nonexistent}
+    card:
+      type: grid
+      columns: 2
+      square: false
+      cards:
+        - type: button
+          entity: button.vps_lightsail_peer_shield_connect
+          name: Connect Shield
+          icon: mdi:lan-connect
+          tap_action: {action: perform-action, perform_action: button.press,
+                       target: {entity_id: button.vps_lightsail_peer_shield_connect}}
+        - type: button
+          entity: button.vps_lightsail_peer_shield_disconnect
+          name: Disconnect Shield
+          icon: mdi:lan-disconnect
+          tap_action: {action: perform-action, perform_action: button.press,
+                       target: {entity_id: button.vps_lightsail_peer_shield_disconnect}}
+qr: []              # empty on purpose: spec-06 §8.2 keeps the QR picture inside the Devices grid (peers@dashboard)

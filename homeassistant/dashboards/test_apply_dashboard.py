@@ -27,14 +27,15 @@ def load(name):
 
 def test_cards_file_keeps_the_canonical_order_and_fills_controls():
     cards = load("vpn-cards.yaml")
-    assert list(cards) == ["status", "controls", "controls@dashboard", "usage", "peers", "qr"]
+    assert list(cards) == ["status", "controls", "controls@dashboard", "usage", "usage@dashboard",
+                           "peers", "peers@dashboard", "peers@popup", "qr"]
     assert len(cards["controls"]) == 2 and len(cards["controls@dashboard"]) == 1 and cards["qr"] == []
 
 
-def test_every_entity_referenced_is_a_spec02_or_spec05_id():
+def test_every_entity_referenced_is_a_registry_id():
     text = "".join((HERE / n).read_text() for n in ("vpn-cards.yaml", "home-card.yaml"))
-    used = set(re.findall(r"\b(?:sensor|binary_sensor|button)\.vps_lightsail_\w+", text))
-    assert used <= IDS_02 | IDS_05 and IDS_05 <= used
+    used = set(ID_RE.findall(text))
+    assert used <= IDS_02 | IDS_05 | SIX_06 and IDS_05 | SIX_06 <= used
 
 
 def test_dashboard_shell_matches_the_create_fields():
@@ -76,10 +77,11 @@ def test_compose_puts_base_then_target_suffix_in_canonical_order():
 
 
 def test_compose_of_the_shipped_file_skips_the_empty_slots():
-    dash = ad.compose(load("vpn-cards.yaml"), "dashboard")
-    assert [c["type"] for c in dash] == ["custom:bubble-card", "conditional", "conditional", "conditional",
-                                         "markdown", "grid", "custom:bubble-card", "grid"]
-    assert ad.compose(load("vpn-cards.yaml"), "popup") == dash[:4] + dash[5:]
+    s = load("vpn-cards.yaml")
+    dash = ad.compose(s, "dashboard")
+    assert [c["type"] for c in dash] == ["custom:bubble-card", "conditional", "conditional", "conditional", "markdown",
+                                         "grid", "grid", "custom:bubble-card", "grid", "grid"]
+    assert ad.compose(s, "popup") == dash[:4] + dash[5:6] + dash[7:9] + s["peers@popup"]
 
 
 @pytest.mark.parametrize("key", ["extra", "status@", "status@phone", "@popup"])
@@ -342,3 +344,69 @@ def test_last_command_card_is_spec05_markdown():
     for part in ("not in ['unknown', 'unavailable']", "state_attr(r, 'action')", "state_attr(r, 'outcome')",
                  "'rejected': '⚠️'", "'interrupted': '⚠️'", "| as_datetime | as_local | relative_time }} ago"):
         assert part in text
+
+
+# ---- plan 06e: spec-06 §8.2 "Server" / "Devices" sections (keys owned by 06e, index R24) ----
+SIX_06 = {  # spec-06 §8.1 with the default peers, pinned by def_ent_id (index R12)
+    "button.vps_lightsail_create", "button.vps_lightsail_destroy", "select.vps_lightsail_region_select",
+    "button.vps_lightsail_peer_shield_connect", "button.vps_lightsail_peer_shield_disconnect",
+    "image.vps_lightsail_peer_iphone_qr",
+}
+KEYS_06 = ("usage@dashboard", "peers@dashboard", "peers@popup")
+ID_RE = re.compile(r"\b(?:sensor|binary_sensor|button|select|image)\.vps_lightsail_\w+")
+STATE = "sensor.vps_lightsail_state"
+GONE = [{"condition": "state", "entity": STATE, "state_not": "nonexistent"}]
+SHIELD_BUTTONS = {"button.vps_lightsail_peer_shield_connect", "button.vps_lightsail_peer_shield_disconnect"}
+
+def walk(node):
+    """Every dict inside a card tree, depth first."""
+    if isinstance(node, dict):
+        yield node
+        for value in node.values():
+            yield from walk(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from walk(value)
+
+def ids_in(node):
+    return set(ID_RE.findall(json.dumps(node)))
+
+def test_06_server_section_follows_usage_on_the_dashboard_only():
+    s = load("vpn-cards.yaml")
+    dash, server = ad.compose(s, "dashboard"), s["usage@dashboard"]
+    assert [c.get("title") for c in server] == ["Server"] and server[0] not in ad.compose(s, "popup")
+    assert dash[dash.index(s["usage"][-1]) + 1] == server[0]
+    assert ids_in(server) == {"select.vps_lightsail_region_select", "button.vps_lightsail_create",
+                              "button.vps_lightsail_destroy", STATE, "sensor.vps_lightsail_last_result"}
+
+def test_06_devices_section_follows_the_peer_grid():
+    s = load("vpn-cards.yaml")
+    dash, devices = ad.compose(s, "dashboard"), s["peers@dashboard"]
+    assert [c.get("title") for c in devices] == ["Devices"] and devices[0] not in ad.compose(s, "popup")
+    assert dash[dash.index(s["peers"][-1]) + 1] == devices[0]
+    assert ids_in(devices) == {STATE, "binary_sensor.vps_lightsail_peer_shield", "image.vps_lightsail_peer_iphone_qr"} | SHIELD_BUTTONS
+
+def test_06_only_create_and_destroy_ask_for_confirmation():
+    asking = {a["target"]["entity_id"]: a["confirmation"]["text"] for c in walk(load("vpn-cards.yaml"))
+              for a in [c.get("tap_action")] if isinstance(a, dict) and "confirmation" in a}
+    assert set(asking) == {"button.vps_lightsail_create", "button.vps_lightsail_destroy"}      # D19
+    assert "Billing starts" in asking["button.vps_lightsail_create"]
+    assert "Stops all charges" in asking["button.vps_lightsail_destroy"]
+
+def test_06_visibility_follows_the_state_sensor():
+    s = load("vpn-cards.yaml")
+    rule = {c["entity"]: c.get("visibility") for c in s["usage@dashboard"][0]["cards"]}
+    assert rule["button.vps_lightsail_create"] == [{"condition": "state", "entity": STATE, "state": "nonexistent"}]
+    assert rule["button.vps_lightsail_destroy"] == GONE and s["peers@dashboard"][0]["visibility"] == GONE
+    assert rule["select.vps_lightsail_region_select"] is None          # the next region can be chosen any time
+
+def test_06_popup_gets_only_the_connect_disconnect_row():
+    s = load("vpn-cards.yaml")
+    pop = ad.compose(s, "popup")
+    (row,) = [c for c in pop if c not in ad.compose({k: v for k, v in s.items() if k not in KEYS_06}, "popup")]
+    assert row == s["peers@popup"][0] and (row["type"], row["conditions"]) == ("conditional", GONE)
+    assert ids_in(row["card"]) == SHIELD_BUTTONS and pop.index(row) == pop.index(s["peers"][-1]) + 1
+
+def test_06_dashboard_config_holds_the_six_slice06_ids():
+    config = ad.dashboard_config(load("vpn-dashboard.yaml"), load("vpn-cards.yaml"))
+    assert SIX_06 <= ids_in(config)                                     # spec-06 §9.3 "the vpn dashboard contains them"
