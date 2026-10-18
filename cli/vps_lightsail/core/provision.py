@@ -109,3 +109,53 @@ def destroy_flow(factory: LightsailFactory, cfg: AgentConfig, region: str, *,
     if report.leftovers:
         raise DestroyIncomplete(report, cause)
     return report
+
+
+@dataclass(frozen=True)
+class Orphan:
+    region: str
+    kind: Literal["static_ip", "key_pair"]
+    name: str
+    billable: bool
+
+ORPHAN_MIN_AGE_S = 600
+
+
+def orphan_names(cfg: AgentConfig) -> frozenset[str]:
+    return frozenset({cfg.static_ip_name, f"{cfg.instance_name}-ip"})
+
+
+def find_orphans(factory: LightsailFactory, cfg: AgentConfig, now: datetime) -> list[Orphan]:
+    """spec-06 §3.3: per region, our-named static IPs that are unattached, older than ORPHAN_MIN_AGE_S,
+    with no instance of ours in that region; plus the legacy key pair there. ≤ 3 free reads per region."""
+    out: list[Orphan] = []
+    for region in cfg.regions:
+        c = factory(region)
+        if c.get_instance(cfg.instance_name) is not None:
+            continue                                   # a CLI setup / swap-ip.sh may be mid-flight (D9)
+        out += [Orphan(region, "static_ip", ip.name, True) for ip in c.list_static_ips()
+                if ip.name in orphan_names(cfg) and ip.attached_to is None
+                and (now - ip.created_at).total_seconds() >= ORPHAN_MIN_AGE_S]
+        if cfg.key_pair_name != DEFAULT_KEY_PAIR and c.key_pair_exists(cfg.key_pair_name):
+            out.append(Orphan(region, "key_pair", cfg.key_pair_name, False))
+    return out
+
+
+def repair_flow(factory: LightsailFactory, cfg: AgentConfig, now: datetime, *, dry_run: bool = False,
+                on_progress: Callable[[str], None] = _noop) -> list[Orphan]:
+    """Release billable orphans (and delete legacy key pairs); returns what was handled — with
+    dry_run, what would be, without any mutation. AWS errors propagate (the caller retries later)."""
+    orphans = find_orphans(factory, cfg, now)
+    if dry_run:
+        return orphans
+    for o in orphans:
+        c = factory(o.region)
+        if o.kind == "static_ip":
+            on_progress(f"releasing orphan static IP {o.name} in {o.region}")
+            c.release_static_ip(o.name)
+            log.warning("released orphan static IP %s in %s (billed ~$0.005/h while unattached)", o.name, o.region)
+        else:
+            on_progress(f"deleting legacy key pair {o.name} in {o.region}")
+            c.delete_key_pair(o.name)
+            log.info("deleted legacy key pair %s in %s", o.name, o.region)
+    return orphans
