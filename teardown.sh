@@ -1,46 +1,11 @@
 #!/usr/bin/env bash
-set -uo pipefail
+# Destroy everything, no leftover charges. Thin wrapper over `vps-lightsail teardown` (spec-06 §1).
+#   AWS_PROFILE=work AWS_REGION=eu-west-1 ./teardown.sh [--config agent.yaml]
+set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROFILE="${AWS_PROFILE:-personal}"
 REGION="${AWS_REGION:-sa-east-1}"
+command -v uv >/dev/null || { echo "uv not found — install it with ./bootstrap.sh cli" >&2; exit 1; }
 
-log() { echo "▶ $*"; }
-
-log "Using profile=$PROFILE region=$REGION"
-
-# Runs an AWS CLI step; skips if the resource is already gone, aborts on real errors.
-step() {
-  local desc="$1"; shift
-  log "$desc"
-  local out
-  if out=$(aws lightsail "$@" --profile "$PROFILE" --region "$REGION" 2>&1); then
-    return 0
-  fi
-  if grep -qiE "NotFoundException|does not exist|not attached" <<< "$out"; then
-    log "  skipped (already gone)"
-  else
-    echo "$out" >&2
-    exit 1
-  fi
-}
-
-step "Deleting instance..." delete-instance --instance-name personal-vps-vpn
-
-step "Detaching static IP..." detach-static-ip --static-ip-name vps-vpn-static-ip
-
-sleep 3
-
-step "Releasing static IP..." release-static-ip --static-ip-name vps-vpn-static-ip
-
-step "Deleting key pair..." delete-key-pair --key-pair-name vps-vpn-key
-
-rm -f "$HOME/.ssh/vps-vpn.pem"
-
-echo "✅ All resources deleted. No more charges."
-echo ""
-echo "To spin up again:"
-echo "  make setup              (shell)"
-echo "  make tf-setup           (Terraform — recommended)"
-echo ""
-echo "Note: new setup generates new WireGuard keys."
-echo "  Re-import mac-vpn.conf in WireGuard app and re-scan iPhone QR."
+exec uv run --project "$SCRIPT_DIR/cli" vps-lightsail teardown --region "$REGION" --profile "$PROFILE" "$@"
