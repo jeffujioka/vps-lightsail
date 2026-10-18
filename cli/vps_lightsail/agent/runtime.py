@@ -81,6 +81,7 @@ class Agent:
         self._hooks: list[Callable[[], None]] = []
         self._acks: dict[int, Callable[[], None]] = {}
         self._acks_lock = threading.Lock()
+        self._state_listeners: list[Callable] = []
         conn.on_connected, conn.on_message, conn.on_subscribed = self._on_connected, self._on_message, self._on_subscribed
 
     def request_refresh(self) -> None:
@@ -92,6 +93,10 @@ class Agent:
 
     def add_shutdown_hook(self, fn: Callable[[], None]) -> None:
         self._hooks.append(fn)
+
+    def add_state_listener(self, fn: Callable[[dict | None, "InstanceInfo | None"], None]) -> None:
+        """plan 06c3: called on the scheduler thread after every state poll (last_state, info)."""
+        self._state_listeners.append(fn)
 
     def run(self, stop_event: threading.Event) -> None:
         """Scheduler thread + connection; on stop: finish the job, run the hooks, publish offline."""
@@ -138,6 +143,13 @@ class Agent:
             self._metrics.state_polled(self.snapshot.region, info)
         else:
             self._metrics.state_poll_failed()
+        with self.snapshot.lock:
+            last_state = self.snapshot.last_state
+        for fn in self._state_listeners:
+            try:
+                fn(last_state, info)
+            except Exception:                              # a listener never breaks the state loop
+                log.exception("state listener failed")
 
     def _switch_region(self, region: str) -> None:                                 # S3d, R13
         log.info("region scan: tracked region %s -> %s", self.snapshot.region, region)   # 02a1's logger
