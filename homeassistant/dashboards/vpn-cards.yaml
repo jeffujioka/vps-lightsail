@@ -31,7 +31,53 @@ status:
         **Problem:** {{ states('sensor.vps_lightsail_state') }}
         {%- set e = state_attr('sensor.vps_lightsail_state', 'error') %}{% if e %} — {{ e }}{% endif %}
         · since {{ state_attr('sensor.vps_lightsail_state', 'since') }}
-controls: []        # SLOT spec-05 (Start/Stop, last result) and spec-06 (Create/Destroy, region, Shield)
+controls:           # spec-05 §5.2 Start/Stop, both targets (R24); spec-06 cards: usage@dashboard, peers@* (06e)
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: sensor.vps_lightsail_state
+        state: [stopped, error]
+    card:
+      type: custom:bubble-card
+      card_type: button
+      button_type: name
+      entity: button.vps_lightsail_start
+      name: Start VPN
+      icon: mdi:play
+      tap_action:
+        action: perform-action
+        perform_action: button.press
+        target:
+          entity_id: button.vps_lightsail_start
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: sensor.vps_lightsail_state
+        state: [healthy, wg_down, unreachable, starting, error]
+    card:
+      type: custom:bubble-card
+      card_type: button
+      button_type: name
+      entity: button.vps_lightsail_stop
+      name: Stop VPN
+      icon: mdi:stop
+      tap_action:
+        action: perform-action
+        perform_action: button.press
+        target:
+          entity_id: button.vps_lightsail_stop
+controls@dashboard: # spec-05 §5.2 last-command card; the home pop-up has no room for it
+  - type: markdown
+    content: >-
+      {% set r = 'sensor.vps_lightsail_last_result' %}
+      {% if states(r) not in ['unknown', 'unavailable'] %}
+      **Last command:** {{ state_attr(r, 'action') }} —
+      {{ {'running': '⏳', 'ok': '✅', 'failed': '❌', 'rejected': '⚠️',
+          'busy': '⚠️', 'interrupted': '⚠️'}.get(state_attr(r, 'outcome'), '') }}
+      {{ states(r) }}
+      <br><small>{{ (state_attr(r, 'finished_at') or state_attr(r, 'started_at'))
+      | as_datetime | as_local | relative_time }} ago</small>
+      {% endif %}
 usage:
   - type: grid
     columns: 2

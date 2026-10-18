@@ -17,22 +17,24 @@ IDS_02 = {  # spec-02 §4, pinned by def_ent_id (index R12)
     "sensor.vps_lightsail_cost_projected", "sensor.vps_lightsail_hourly_rate",
     "binary_sensor.vps_lightsail_peer_shield", "binary_sensor.vps_lightsail_peer_iphone",
 }
+IDS_05 = {"button.vps_lightsail_start", "button.vps_lightsail_stop",  # spec-05 §5.1 (index R12)
+          "sensor.vps_lightsail_last_result"}
 
 
 def load(name):
     return yaml.safe_load((HERE / name).read_text())
 
 
-def test_cards_file_has_the_five_sections_in_canonical_order_with_empty_slots():
+def test_cards_file_keeps_the_canonical_order_and_fills_controls():
     cards = load("vpn-cards.yaml")
-    assert list(cards) == ["status", "controls", "usage", "peers", "qr"]
-    assert cards["controls"] == [] and cards["qr"] == []
+    assert list(cards) == ["status", "controls", "controls@dashboard", "usage", "peers", "qr"]
+    assert len(cards["controls"]) == 2 and len(cards["controls@dashboard"]) == 1 and cards["qr"] == []
 
 
-def test_every_entity_referenced_is_a_spec02_id():
+def test_every_entity_referenced_is_a_spec02_or_spec05_id():
     text = "".join((HERE / n).read_text() for n in ("vpn-cards.yaml", "home-card.yaml"))
-    used = set(re.findall(r"\b(?:sensor|binary_sensor)\.vps_lightsail_\w+", text))
-    assert used and used <= IDS_02
+    used = set(re.findall(r"\b(?:sensor|binary_sensor|button)\.vps_lightsail_\w+", text))
+    assert used <= IDS_02 | IDS_05 and IDS_05 <= used
 
 
 def test_dashboard_shell_matches_the_create_fields():
@@ -74,10 +76,10 @@ def test_compose_puts_base_then_target_suffix_in_canonical_order():
 
 
 def test_compose_of_the_shipped_file_skips_the_empty_slots():
-    cards = ad.compose(load("vpn-cards.yaml"), "dashboard")
-    assert [c["type"] for c in cards] == ["custom:bubble-card", "conditional", "grid",
-                                          "custom:bubble-card", "grid"]
-    assert ad.compose(load("vpn-cards.yaml"), "popup") == cards
+    dash = ad.compose(load("vpn-cards.yaml"), "dashboard")
+    assert [c["type"] for c in dash] == ["custom:bubble-card", "conditional", "conditional", "conditional",
+                                         "markdown", "grid", "custom:bubble-card", "grid"]
+    assert ad.compose(load("vpn-cards.yaml"), "popup") == dash[:4] + dash[5:]
 
 
 @pytest.mark.parametrize("key", ["extra", "status@", "status@phone", "@popup"])
@@ -303,3 +305,40 @@ def test_main_exits_2_when_the_token_is_missing_on_jeff(tmp_path, monkeypatch, c
     monkeypatch.setenv("HA_TOKEN_FILE", str(tmp_path / "absent"))
     monkeypatch.setenv("VPS_LIGHTSAIL_RELAYED", "1")
     assert ad.main(["--check"]) == 2 and "token file missing on jeff" in capsys.readouterr().err
+
+
+def test_controls_visibility_follows_spec05_5_2():
+    start, stop = load("vpn-cards.yaml")["controls"]
+    for card, entity, states in ((start, "button.vps_lightsail_start", ["stopped", "error"]),
+                                 (stop, "button.vps_lightsail_stop",
+                                  ["healthy", "wg_down", "unreachable", "starting", "error"])):
+        assert card["type"] == "conditional"
+        assert card["conditions"] == [{"condition": "state", "entity": "sensor.vps_lightsail_state",
+                                       "state": states}]
+        inner = card["card"]
+        assert (inner["type"], inner["card_type"], inner["entity"]) == ("custom:bubble-card", "button", entity)
+        assert inner["tap_action"] == {"action": "perform-action", "perform_action": "button.press",
+                                       "target": {"entity_id": entity}}
+        assert "confirmation" not in json.dumps(card)                     # D19: no confirmation
+    shown = set(start["conditions"][0]["state"]) | set(stop["conditions"][0]["state"])
+    assert not shown & {"nonexistent", "stopping", "creating", "provisioning", "destroying", "unavailable"}
+
+
+def test_popup_gets_the_buttons_but_not_the_last_command_card():
+    home, sections = load("home-card.yaml"), load("vpn-cards.yaml")
+    popup = ad.popup_card(home, sections)["cards"]
+    assert [c for c in popup if c in sections["controls"]] == sections["controls"]
+    assert "sensor.vps_lightsail_last_result" not in json.dumps(popup)
+    dash = ad.dashboard_config(load("vpn-dashboard.yaml"), sections)["views"][0]["cards"]
+    i = dash.index(sections["controls"][0])
+    assert dash[i - 1] == sections["status"][-1]                          # right below the state rows
+    assert dash[i:i + 3] == sections["controls"] + sections["controls@dashboard"]
+
+
+def test_last_command_card_is_spec05_markdown():
+    (card,) = load("vpn-cards.yaml")["controls@dashboard"]
+    text = card["content"]
+    assert card["type"] == "markdown" and "{% set r = 'sensor.vps_lightsail_last_result' %}" in text
+    for part in ("not in ['unknown', 'unavailable']", "state_attr(r, 'action')", "state_attr(r, 'outcome')",
+                 "'rejected': '⚠️'", "'interrupted': '⚠️'", "| as_datetime | as_local | relative_time }} ago"):
+        assert part in text
