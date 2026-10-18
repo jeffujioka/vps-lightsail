@@ -5,15 +5,16 @@ appended the boto3 half (Boto3Lightsail, LightsailFactory, boto3_factory, locate
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Protocol
+from typing import Literal, Protocol, TypeVar
 
 import boto3
 import copy
 from botocore.config import Config
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError, ReadTimeoutError
 
 AwsState = Literal["pending", "running", "stopping", "stopped",
                    "shutting-down", "terminated", "starting"]
@@ -52,6 +53,25 @@ class MetricPoint:
     value: float                # Sum over the period, bytes
 
 
+@dataclass(frozen=True)
+class StaticIpInfo:
+    name: str
+    ip: str
+    attached_to: str | None
+    created_at: datetime        # tz-aware UTC
+
+
+@dataclass(frozen=True)
+class PortRule:
+    protocol: Literal["tcp", "udp"]
+    from_port: int
+    to_port: int
+
+
+VPN_PORTS = (PortRule("tcp", 22, 22), PortRule("udp", 51820, 51820))
+MANAGED_TAG = {"key": "managed-by", "value": "vps-lightsail"}
+
+
 class LightsailClient(Protocol):
     region: str
     def get_instance(self, name: str) -> InstanceInfo | None: ...        # None = not found
@@ -63,7 +83,18 @@ class LightsailClient(Protocol):
     def status_check_failed(self, name: str, minutes: int = 15) -> bool | None: ...
     def start_instance(self, name: str) -> None: ...
     def stop_instance(self, name: str) -> None: ...
-    # create / delete / static-ip / key-pair / port methods are added by spec-06
+    def list_instances(self) -> list[InstanceInfo]: ...
+    def first_available_zone(self) -> str: ...
+    def create_instance(self, name: str, *, zone: str, blueprint_id: str, bundle_id: str) -> None: ...
+    def delete_instance(self, name: str) -> None: ...
+    def list_static_ips(self) -> list[StaticIpInfo]: ...
+    def allocate_static_ip(self, name: str) -> None: ...
+    def attach_static_ip(self, name: str, instance_name: str) -> None: ...
+    def detach_static_ip(self, name: str) -> None: ...
+    def release_static_ip(self, name: str) -> None: ...
+    def key_pair_exists(self, name: str) -> bool: ...
+    def delete_key_pair(self, name: str) -> None: ...
+    def put_public_ports(self, instance_name: str, rules: Sequence[PortRule]) -> None: ...
 
 
 # --- plan 01c1: the boto3 half (spec-01 §2 bullets, spec-02 §1.3, M11) -----------------------
@@ -84,6 +115,71 @@ def _utc(value: datetime) -> datetime:
 
 def _code(err: ClientError) -> str:
     return str(err.response.get("Error", {}).get("Code", ""))
+
+
+# --- plan 06a1: spec-06 §2.1 error model and retry wrapper ------------------------------------
+T = TypeVar("T")
+DEFAULT_KEY_PAIR = "LightsailDefaultKeyPair"          # spec-06 §1.2: never touched by any flow
+MUTATING_METHODS = frozenset({"create_instance", "delete_instance", "allocate_static_ip", "attach_static_ip",
+                              "detach_static_ip", "release_static_ip", "delete_key_pair", "put_public_ports"})
+RETRYABLE_CODES = frozenset({"ThrottlingException", "ServiceUnavailableException"})
+RETRY_SLEEPS_S = (1.0, 3.0)
+_sleep = time.sleep                                   # tests patch lightsail._sleep
+
+
+class LightsailError(Exception):
+    """A failed spec-06 §2.1 call; `code` is the AWS error code (index R6, R11)."""
+
+    def __init__(self, code: str, message: str = "") -> None:
+        super().__init__(f"{code}: {message}" if message else code)
+        self.code, self.message = code, message
+
+
+def _retrying(fn: Callable[[], T]) -> T:
+    """spec-06 §2.1: ≤ 3 attempts, pausing 1 s then 3 s, only on throttling, service-unavailable,
+    connection and read-timeout errors; any other ClientError → LightsailError(code, message)."""
+    for pause in (*RETRY_SLEEPS_S, None):
+        try:
+            return fn()
+        except ClientError as e:
+            if _code(e) not in RETRYABLE_CODES or pause is None:
+                raise LightsailError(_code(e), str(e.response.get("Error", {}).get("Message", ""))) from e
+        except (EndpointConnectionError, ReadTimeoutError) as e:
+            if pause is None:
+                raise LightsailError(type(e).__name__, str(e)) from e
+        _sleep(pause)
+    raise AssertionError("unreachable")
+
+
+def _mutate(fn: Callable[[], object], ignore: Callable[[LightsailError], bool] = lambda _e: False) -> None:
+    try:
+        _retrying(fn)
+    except LightsailError as e:
+        if not ignore(e):
+            raise
+
+
+def _not_found(e: LightsailError) -> bool:
+    return e.code == "NotFoundException"
+
+
+def _not_attached(e: LightsailError) -> bool:
+    return _not_found(e) or (e.code == "InvalidInputException" and "not attached" in e.message.lower())
+
+
+def _instance_info(raw: dict, region: str) -> InstanceInfo:
+    return InstanceInfo(raw["name"], raw["arn"], raw["state"]["name"], region, _utc(raw["createdAt"]),
+                        raw.get("publicIpAddress"), raw["bundleId"])
+
+
+def _pages(call: Callable[..., dict], key: str, **params: object) -> list[dict]:
+    out: list[dict] = []
+    token = None
+    while True:
+        page = call(**params, **({"pageToken": token} if token else {}))
+        out += page.get(key, [])
+        if not (token := page.get("nextPageToken")):
+            return out
 
 
 class Boto3Lightsail:
@@ -151,6 +247,59 @@ class Boto3Lightsail:
 
     def stop_instance(self, name: str) -> None:
         self._client.stop_instance(instanceName=name)
+
+    # --- spec-06 §2.1 (plan 06a1): one API call each; the mutating ones through _retrying ------
+    def list_instances(self) -> list[InstanceInfo]:
+        return [_instance_info(r, self.region) for r in _pages(self._client.get_instances, "instances")]
+
+    def first_available_zone(self) -> str:
+        regions = self._client.get_regions(includeAvailabilityZones=True)["regions"]
+        zones = sorted(z["zoneName"] for r in regions if r["name"] == self.region
+                       for z in r.get("availabilityZones", []) if z.get("state") == "available")
+        if not zones:
+            raise LightsailError("NoAvailableZone", f"no available zone in {self.region}")
+        return zones[0]
+
+    def create_instance(self, name: str, *, zone: str, blueprint_id: str, bundle_id: str) -> None:
+        _mutate(lambda: self._client.create_instances(          # no keyPairName: spec-06 §1.2, M13
+            instanceNames=[name], availabilityZone=zone, blueprintId=blueprint_id, bundleId=bundle_id,
+            tags=[dict(MANAGED_TAG)]))
+
+    def delete_instance(self, name: str) -> None:
+        _mutate(lambda: self._client.delete_instance(instanceName=name, forceDeleteAddOns=True), _not_found)
+
+    def list_static_ips(self) -> list[StaticIpInfo]:
+        return [StaticIpInfo(r["name"], r.get("ipAddress", ""),
+                             (r.get("attachedTo") or None) if r.get("isAttached") else None, _utc(r["createdAt"]))
+                for r in _pages(self._client.get_static_ips, "staticIps")]
+
+    def allocate_static_ip(self, name: str) -> None:
+        _mutate(lambda: self._client.allocate_static_ip(staticIpName=name))
+
+    def attach_static_ip(self, name: str, instance_name: str) -> None:
+        _mutate(lambda: self._client.attach_static_ip(staticIpName=name, instanceName=instance_name))
+
+    def detach_static_ip(self, name: str) -> None:
+        _mutate(lambda: self._client.detach_static_ip(staticIpName=name), _not_attached)
+
+    def release_static_ip(self, name: str) -> None:
+        _mutate(lambda: self._client.release_static_ip(staticIpName=name), _not_found)
+
+    def key_pair_exists(self, name: str) -> bool:
+        try:
+            self._client.get_key_pair(keyPairName=name)
+        except ClientError as e:
+            if _code(e) == "NotFoundException":
+                return False
+            raise
+        return True
+
+    def delete_key_pair(self, name: str) -> None:
+        _mutate(lambda: self._client.delete_key_pair(keyPairName=name), _not_found)
+
+    def put_public_ports(self, instance_name: str, rules: Sequence[PortRule]) -> None:
+        infos = [{"fromPort": r.from_port, "toPort": r.to_port, "protocol": r.protocol} for r in rules]
+        _mutate(lambda: self._client.put_instance_public_ports(instanceName=instance_name, portInfos=infos))
 
 
 LightsailFactory = Callable[[str], LightsailClient]         # region → client (index §5.2)
