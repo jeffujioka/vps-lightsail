@@ -21,6 +21,8 @@ from botocore.exceptions import BotoCoreError, ClientError
 from vps_lightsail import __version__
 from vps_lightsail.agent.clients import Clients, build_clients
 from vps_lightsail.agent.commands import Command, CommandRunner
+from vps_lightsail.agent.commands_create import (REPAIR_TIMEOUT_S, OpContext, RepairLoop, destroy_command,
+                                                 repair_job)
 from vps_lightsail.agent.contract import Topics
 from vps_lightsail.agent.mqtt import MqttConnection
 from vps_lightsail.agent.runtime import Agent
@@ -164,6 +166,7 @@ def build_command_runner(cfg: AgentConfig, clients: Clients, conn: MqttConnectio
                            clear_retained=lambda topic: conn.publish(topic, b"", retain=True, qos=1))
     runner.register(start_command(cfg, clients))
     runner.register(stop_command(cfg, clients))
+    runner.register(destroy_command(op_context(cfg, clients, conn)))
     return runner
 
 
@@ -172,6 +175,20 @@ def attach_command_runner(agent: Agent, runner: CommandRunner, topics: Topics) -
     agent.add_message_route(topics.cmd_filter, runner.on_message, qos=1,
                             on_subscribed=runner.open_recovery_window)
     agent.add_shutdown_hook(runner.shutdown)
+
+
+def op_context(cfg: AgentConfig, clients: Clients, conn: MqttConnection) -> OpContext:
+    """The spec-06 handlers' view of the agent (06b/06c pass more fields)."""
+    return OpContext(cfg, clients.factory, companion_scan(clients),
+                     lambda topic, payload: conn.publish(topic, payload, retain=True, qos=1), conn.topics)
+
+
+def start_repair_loop(agent: Agent, runner: CommandRunner, ctx: OpContext) -> RepairLoop:
+    """spec-06 §3.3: boot + hourly repair under the runner's lock (M12); stopped with the agent."""
+    loop = RepairLoop(lambda: runner.try_run_internal("repair", repair_job(ctx), REPAIR_TIMEOUT_S))
+    agent.add_shutdown_hook(loop.stop)
+    loop.start()
+    return loop
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -198,6 +215,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     runner = build_command_runner(cfg, clients, conn, lambda: agent.request_refresh())
     agent = Agent(cfg, clients, conn, ops=runner)            # the runner is the Agent's OperationView (§2.6)
     attach_command_runner(agent, runner, conn.topics)
+    start_repair_loop(agent, runner, op_context(cfg, clients, conn))
     agent.run(stop)                              # starts the connection; returns after "offline"
     return EXIT_OK
 
