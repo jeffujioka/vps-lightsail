@@ -21,11 +21,12 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from vps_lightsail import __version__
 from vps_lightsail.agent.clients import Clients, build_clients
-from vps_lightsail.agent.commands import Command, CommandRunner
+from vps_lightsail.agent.commands import Command, CommandRunner, result_payload
 from vps_lightsail.agent.commands_create import (REPAIR_TIMEOUT_S, OpContext, RepairLoop, create_command,
                                                  destroy_command, repair_job)
 from vps_lightsail.agent.contract import Topics
 from vps_lightsail.agent.mqtt import MqttConnection
+from vps_lightsail.agent.region import REGION_ACTION, RegionRejected, RegionStore
 from vps_lightsail.agent.runtime import Agent
 from vps_lightsail.core import operations
 from vps_lightsail.core.clock import SYSTEM_CLOCK, Clock
@@ -159,7 +160,8 @@ def stop_command(cfg: AgentConfig, clients: Clients, *, clock: Clock = SYSTEM_CL
 
 
 def build_command_runner(cfg: AgentConfig, clients: Clients, conn: MqttConnection,
-                         request_refresh: Callable[[], None]) -> CommandRunner:
+                         request_refresh: Callable[[], None], *,
+                         region_store: RegionStore | None = None) -> CommandRunner:
     """spec-05 §2: results retained QoS 1 on BASE/cmd/result; a retained command is cleared (rule 2)."""
     topics = conn.topics
     runner = CommandRunner(lambda payload: conn.publish_json(topics.cmd_result, payload, retain=True, qos=1),
@@ -167,7 +169,7 @@ def build_command_runner(cfg: AgentConfig, clients: Clients, conn: MqttConnectio
                            clear_retained=lambda topic: conn.publish(topic, b"", retain=True, qos=1))
     runner.register(start_command(cfg, clients))
     runner.register(stop_command(cfg, clients))
-    ctx = replace(op_context(cfg, clients, conn), mark_provisioned=runner.mark_provisioned,
+    ctx = replace(op_context(cfg, clients, conn, region_store=region_store), mark_provisioned=runner.mark_provisioned,
                  mark_creating=runner.mark_creating)
     runner.register(create_command(ctx))
     runner.register(destroy_command(ctx))
@@ -181,11 +183,12 @@ def attach_command_runner(agent: Agent, runner: CommandRunner, topics: Topics) -
     agent.add_shutdown_hook(runner.shutdown)
 
 
-def op_context(cfg: AgentConfig, clients: Clients, conn: MqttConnection) -> OpContext:
+def op_context(cfg: AgentConfig, clients: Clients, conn: MqttConnection, *,
+               region_store: RegionStore | None = None) -> OpContext:
     """The spec-06 handlers' view of the agent (06b/06c pass more fields)."""
     return OpContext(cfg, clients.factory, companion_scan(clients),
                      lambda topic, payload: conn.publish(topic, payload, retain=True, qos=1), conn.topics,
-                     admin_factory=clients.admin_factory)
+                     admin_factory=clients.admin_factory, region_store=region_store)
 
 
 def start_repair_loop(agent: Agent, runner: CommandRunner, ctx: OpContext) -> RepairLoop:
@@ -194,6 +197,38 @@ def start_repair_loop(agent: Agent, runner: CommandRunner, ctx: OpContext) -> Re
     agent.add_shutdown_hook(loop.stop)
     loop.start()
     return loop
+
+
+def instance_region(agent: Agent) -> str | None:
+    """Where an instance exists now (latest successful state poll), else None — spec-06 §6.4 hint."""
+    snap = agent.snapshot
+    with snap.lock:
+        return snap.region if snap.last_info is not None else None
+
+
+def region_result(store: RegionStore, value: str, *, clock: Clock = SYSTEM_CLOCK) -> dict:
+    """BASE/config/region/set → the cmd/result payload (index R10: action "config/region")."""
+    now = clock.now()
+    try:
+        return result_payload(REGION_ACTION, "ok", store.set(value), now, now)
+    except RegionRejected as e:
+        return result_payload(REGION_ACTION, "rejected", str(e), now, now)
+
+
+def attach_region(agent: Agent, store: RegionStore, conn: MqttConnection) -> None:
+    """spec-06 §6.4: retained read-back (boot and every reconnect) + the set route. No runner lock."""
+    topics = conn.topics
+
+    def on_region(_topic: str, payload: bytes, retain: bool) -> None:
+        if retain:                                      # our own publish comes back with retain=False
+            store.on_retained(payload)
+
+    def on_set(_topic: str, payload: bytes, _retain: bool) -> None:
+        result = region_result(store, payload.decode("utf-8", "replace"))
+        conn.publish_json(topics.cmd_result, result, retain=True, qos=1)
+
+    agent.add_message_route(topics.region, on_region, on_subscribed=store.start_load)
+    agent.add_message_route(topics.region_set, on_set)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -217,9 +252,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         conn.start()
         return run_once(conn, stop)
     install_stop_signals(stop)
-    runner = build_command_runner(cfg, clients, conn, lambda: agent.request_refresh())
+    region_store = RegionStore(conn, cfg, instance_region=lambda: instance_region(agent))
+    runner = build_command_runner(cfg, clients, conn, lambda: agent.request_refresh(),
+                                  region_store=region_store)
     agent = Agent(cfg, clients, conn, ops=runner)            # the runner is the Agent's OperationView (§2.6)
     attach_command_runner(agent, runner, conn.topics)
+    attach_region(agent, region_store, conn)
     start_repair_loop(agent, runner, op_context(cfg, clients, conn))
     agent.run(stop)                              # starts the connection; returns after "offline"
     return EXIT_OK

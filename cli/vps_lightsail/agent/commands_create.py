@@ -11,6 +11,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from vps_lightsail.agent.commands import Command, Handler
 from vps_lightsail.agent.contract import Topics
+from vps_lightsail.agent.region import RegionStore
 from vps_lightsail.core.clock import SYSTEM_CLOCK, Clock
 from vps_lightsail.core.companions import CompanionReport, disconnect_companions
 from vps_lightsail.core.config import AgentConfig
@@ -46,6 +47,12 @@ class OpContext:
     mark_creating: Callable[[], None] = _nothing                    # 06b: CommandRunner.mark_creating
     materials: MaterialCache = field(default_factory=dict)          # shared by create and destroy
     after_create: Callable[[CreateResult, ProgressFn], list[str]] | None = None   # 06c3: staging + QR notes
+    region_store: RegionStore | None = None           # plan 06c2 (spec-06 §6.4); None → cfg.region
+
+
+def create_region(ctx: OpContext) -> str:
+    """spec-06 §6.1 `ctx.region_store.selected`: the region for the *next* create (D16)."""
+    return ctx.region_store.selected if ctx.region_store is not None else ctx.cfg.region
 
 
 def _orphans_text(orphans: list[Orphan]) -> str:
@@ -119,7 +126,7 @@ def _cache_material(ctx: OpContext, region: str, material: ClientMaterial) -> No
 def handle_create(ctx: OpContext, progress: ProgressFn) -> OpOutcome:
     """spec-06 §6.1 under index R11. 06b publishes no QR and pushes nothing to companions: 06c plugs both
     into ctx.after_create. --force does not exist here: an existing instance is rejected, never deleted."""
-    region = ctx.cfg.region                                     # 06c2: create_region(ctx)
+    region = create_region(ctx)
 
     def run() -> OpOutcome:
         if ctx.admin_factory is None:
