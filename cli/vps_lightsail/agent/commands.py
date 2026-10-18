@@ -155,7 +155,9 @@ class CommandRunner:
 
     def _accept(self, cmd: Command, now: datetime) -> int:      # caller holds the lock
         self._generation += 1
-        self._last_error = self._last_progress = None            # M10: only an accepted command clears it
+        self._last_progress = None
+        if cmd.operation is not None:                             # M10: only an accepted operation clears it
+            self._last_error = None
         self._inflight = InFlight(cmd.action, cmd.operation, now, self._clock.monotonic(), self._generation)
         self._provisioned = True   # index §5.4: flips False only once create's precondition passes (mark_creating)
         self._idle.clear()
@@ -201,7 +203,7 @@ class CommandRunner:
                 log.info("late %s outcome discarded (%s)", action, outcome)
                 return
             payload = result_payload(action, outcome, message, cur.started_at, self._clock.now(), details)
-            if outcome == "failed":
+            if outcome == "failed" and cur.operation is not None:
                 self._last_error = payload["message"]
             self._end()
             self._publish(payload)

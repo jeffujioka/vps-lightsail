@@ -24,7 +24,7 @@ from vps_lightsail.agent.clients import Clients, build_clients
 from vps_lightsail.agent.commands import Command, CommandRunner, result_payload
 from vps_lightsail.agent.commands_create import (REPAIR_TIMEOUT_S, OpContext, RepairLoop, create_command,
                                                  destroy_command, repair_job)
-from vps_lightsail.agent.commands_peer import after_create
+from vps_lightsail.agent.commands_peer import after_create, peer_commands
 from vps_lightsail.agent.contract import Topics
 from vps_lightsail.agent.mqtt import MqttConnection
 from vps_lightsail.agent.region import REGION_ACTION, RegionRejected, RegionStore
@@ -175,6 +175,8 @@ def build_command_runner(cfg: AgentConfig, clients: Clients, conn: MqttConnectio
     ctx = replace(ctx, after_create=lambda result, _progress, base=ctx: after_create(base, result))
     runner.register(create_command(ctx))
     runner.register(destroy_command(ctx))
+    for command in peer_commands(ctx):
+        runner.register(command)
     return runner
 
 
