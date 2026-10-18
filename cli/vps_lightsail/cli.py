@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -13,7 +14,6 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import NoReturn
 
-import httpx
 import qrcode
 from botocore.exceptions import BotoCoreError, ClientError     # reads (locate, orphan scan) raise these unwrapped
 
@@ -28,9 +28,12 @@ from .core.fakes import DEVICES_FILE, FakeDiscovery, FakeServer, fake_factory
 from .core.lightsail import (Boto3Lightsail, InstanceInfo, LightsailClient, LightsailError, LightsailFactory,
                              boto3_factory, locate_instance)
 from .core.operations import OperationFailed, OperationRejected
-from .core.peers import PeerCommandError, is_connected, peer_conf, peer_ip
+from .core.peers import (PeerCommandError, add_peer, build_conf, is_connected, next_free_peer_ip, peer_conf,
+                         peer_ip, server_public_key, used_peer_ips)
 from .core.provision import DestroyIncomplete, DestroyReport, InstanceExists, repair_flow
 from .core.server import ProbeResult, ServerAdmin, ServerProbe, SshServer, SshServerAdmin
+
+NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}$")                 # --name lands in dist/<NAME>-vpn.conf
 
 REGIONS = {
     "sa-east-1": "São Paulo, Brazil",
@@ -78,7 +81,7 @@ def _context(args: argparse.Namespace) -> tuple[AgentConfig, str, Backend]:
 def _ns(**kw: object) -> argparse.Namespace:
     return argparse.Namespace(**{"fake": None, "config": None, "force": False, "stage": False,
                                  "dry_run": False, "no_disconnect": False, "timeout": None,
-                                 "peer": None, "qr": False, **kw})
+                                 "peer": None, "qr": False, "name": None, **kw})
 
 def _env_token(device: Device) -> str | None:
     key = "".join(c if c.isalnum() else "_" for c in device.name).upper()
@@ -153,6 +156,7 @@ EXAMPLES:
     push_p.add_argument("--stage", action="store_true", help="Store without activating (companion API v2 only)")
     push_p.add_argument("--token", help="Bearer token (beats PEER_<NAME>_TOKEN, SHIELD_VPN_TOKEN[_<DEVICE>], TXT)")
     push_p.add_argument("--device", help="Device IP[:port] for ad-hoc pushes (skip mDNS scan)")
+    push_p.add_argument("--name", help="New ad-hoc peer saved to dist/<NAME>-vpn.conf + QR; no device contacted")
     push_p.add_argument("--conf", type=Path, help="Push this .conf file instead of one built from the server")
     push_p.add_argument("--config", help="Agent YAML with the peers (default: shield companion + iphone QR)")
     push_p.add_argument("--timeout", type=float, default=None,
@@ -388,6 +392,80 @@ def _push_declarative(args: argparse.Namespace) -> None:
         sys.exit(1)                                  # 06d1 already saved dist/<name>-vpn.conf and said so
 
 
+def _adhoc_targets(args: argparse.Namespace, backend: Backend, cfg: AgentConfig) -> list[Device]:
+    if args.device:
+        host, _, port = args.device.partition(":")
+        return [Device(name=host, ip=host, port=int(port or 8080))]
+    devices = _devices(args, cfg, backend).scan()                           # R15 scan timeout
+    if not devices:
+        _fail("no companion found on the LAN", hint="pass --device IP[:PORT], or --name LABEL to only save a config")
+    return _select_devices(devices)
+
+
+def _stageable(dev: Device, args: argparse.Namespace) -> bool:
+    """--device has no TXT record: ask GET /status (06d1's probe rule); scanned devices carry TXT `api`."""
+    if not args.device:
+        return dev.api >= 2
+    status = get_status(dev, _get_token(dev, args) or "")
+    return bool(status and status.api >= 2)
+
+
+def _push_adhoc(args: argparse.Namespace) -> None:
+    """spec-06 §7.3 legacy ad-hoc mode: a new peer on the next free IP per target, over ServerAdmin.run."""
+    if args.name and (args.device or args.stage or args.conf):
+        _fail("--name only saves a config; it cannot be combined with --device, --stage or --conf")
+    if args.name and not NAME_RE.match(args.name):
+        _fail("--name must be 1-32 letters, digits, '-' or '_'")
+    cfg, region, backend = _context(args)
+    targets: list[Device | None] = [None] if args.name else _adhoc_targets(args, backend, cfg)
+    ok = True
+    for dev in [d for d in targets if args.stage and not _stageable(d, args)]:   # D15: nothing added, no POST
+        print(f"  ⚠️  {v1_refusal(dev.name)}")
+        targets.remove(dev)
+        ok = False
+    try:
+        if args.conf:                                                       # a ready file: no server change
+            conf = Path(args.conf).read_text()
+            for dev in targets:
+                ok = _push(dev.name, dev, conf, _get_token(dev, args) or "", activate=not args.stage,
+                           probe=bool(args.device)) and ok
+        elif targets:
+            ok = _add_adhoc(args, cfg, region, backend, targets) and ok
+    except CLI_ERRORS as e:
+        _fail(f"push failed: {e}")
+    if not ok:
+        sys.exit(1)
+
+
+def _add_adhoc(args: argparse.Namespace, cfg: AgentConfig, region: str, backend: Backend,
+               targets: list[Device | None]) -> bool:
+    where, info = _locate(cfg, region, backend)
+    if info.state != "running":
+        _fail(f"instance {cfg.instance_name} in {where} is {info.state}", hint="start it with: vps-lightsail start")
+    endpoint = _endpoint(backend, where, info, cfg)
+    admin = backend.admin_for(where)
+    server_public = server_public_key(admin, cfg.instance_name)
+    used = used_peer_ips(admin, cfg.instance_name) | {peer_ip(i) for i in range(len(cfg.peers))}
+    ok = True
+    for dev in targets:
+        label = args.name or re.sub(r"[^A-Za-z0-9_.-]", "_", dev.name)
+        ip = next_free_peer_ip(used)
+        used.add(ip)
+        print(f"▶ Adding ad-hoc peer {label} as {ip}…")
+        private, _ = add_peer(admin, cfg.instance_name, ip)
+        conf = build_conf(private, ip, server_public, endpoint)
+        if dev is None:
+            path = _save(label, conf)
+            _print_qr(label, conf)
+            print(f"✅ {label}: {path} (peer {ip})")
+        elif _push(label, dev, conf, _get_token(dev, args) or "", activate=not args.stage, probe=bool(args.device)):
+            print(f"✅ {label} → peer {ip}")
+        else:
+            print(f"📋 {label}: config kept in {_save(label, conf)}")
+            ok = False
+    return ok
+
+
 def _disconnect(cfg: AgentConfig, devices: _Devices) -> Callable[[], None]:
     def hook() -> None:
         for item in disconnect_companions(list(cfg.peers), scan=devices.scan).outcomes:
@@ -570,90 +648,14 @@ def _peer_lines(result: ProbeResult, now: int) -> list[str]:
                     for ip in sorted(result.wg_conf_duplicates)]
 
 
-def _push_legacy_pem(args: argparse.Namespace) -> None:
-    key_path = Path.home() / ".ssh" / "vps-vpn.pem"
-    if not key_path.exists():
-        print("Error: no VPN running (no SSH key at ~/.ssh/vps-vpn.pem)", file=sys.stderr)
-        sys.exit(1)
-
-    try:
-        server_ip = infra.aws([
-            "get-static-ip",
-            "--static-ip-name", infra.STATIC_IP_NAME,
-            "--query", "staticIp.ipAddress",
-            "--output", "text",
-        ], args.profile, args.region)
-    except Exception:
-        print("Error: no VPN running (no static IP found)", file=sys.stderr)
-        sys.exit(1)
-
-    vps = infra.VPSInfo(server_ip=server_ip, key_path=key_path, region=args.region)
-    _push_to_devices(args, vps)
-
-
 def cmd_push(args: argparse.Namespace) -> None:
     if not args.peer:
-        args.timeout = args.timeout or 5.0            # the legacy body reads it unconditionally
-        _push_legacy_pem(args)
+        _push_adhoc(args)
         return
-    if args.device:
-        _fail("--device is for ad-hoc pushes; a configured companion is found by its mdns_name",
+    if args.device or args.name:
+        _fail("--peer cannot be combined with --device or --name",
               hint=f"push the file instead: vps-lightsail push --conf dist/{args.peer}-vpn.conf --device IP")
     _push_declarative(args)
-
-
-def _push_to_devices(args: argparse.Namespace, vps: infra.VPSInfo) -> None:
-    """Scan for devices, select, generate peer configs, push."""
-
-    if args.device:
-        parts = args.device.split(":")
-        ip = parts[0]
-        port = int(parts[1]) if len(parts) > 1 else 8080
-        devices = [Device(name=ip, ip=ip, port=port)]
-    else:
-        timeout = getattr(args, "timeout", 5.0)
-        print(f"🔍 Scanning for devices ({timeout}s)...")
-        devices = DeviceDiscovery(timeout=timeout).scan()
-
-    if not devices:
-        print("  No devices found.")
-        retry = input("  Scan again? [y/N]: ").strip().lower()
-        if retry == "y":
-            devices = DeviceDiscovery(timeout=getattr(args, "timeout", 5.0)).scan()
-        if not devices:
-            print("  No devices found. Exiting.")
-            return
-
-    selected = _select_devices(devices)
-    if not selected:
-        return
-
-    server_public = infra.get_server_public_key(vps.server_ip, vps.key_path)
-    used_ips = infra.used_peer_ips(vps.server_ip, vps.key_path)
-
-    for device in selected:
-        peer_ip = infra.next_free_peer_ip(used_ips)
-        used_ips.add(peer_ip)
-        print(f"\n▶ Configuring {device.name} ({device.ip}) as peer {peer_ip}...")
-
-        private_key, _ = infra.add_peer(vps.server_ip, vps.key_path, peer_ip)
-        conf = infra.build_conf(private_key, peer_ip, server_public, vps.server_ip)
-
-        token = _get_token(device, args)
-        if not token:
-            save_path = Path(f"{device.name.replace(' ', '_')}-vpn.conf")
-            save_path.write_text(conf)
-            print(f"  ⚠️  No token for {device.name}")
-            print(f"  📋 Config saved to {save_path}")
-        else:
-            result = push_config(device, conf, token)
-            if result.success:
-                print(f"  ✅ {device.name} activated (peer {peer_ip})")
-            else:
-                save_path = Path(f"{device.name.replace(' ', '_')}-vpn.conf")
-                save_path.write_text(conf)
-                print(f"  ⚠️  {device.name} returned HTTP {result.status_code}")
-                print(f"  📋 Config saved to {save_path}")
 
 
 def _select_devices(devices: list[Device]) -> list[Device]:

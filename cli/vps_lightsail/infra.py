@@ -1,12 +1,9 @@
-"""VPS infrastructure management: lifecycle shims over the core flows (spec-06 §7.2)."""
+"""CLI print-progress shims over the core (spec-06 §1): setup, teardown, start, stop."""
 
 from __future__ import annotations
 
 import dataclasses
-import subprocess
-import time
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 
 from .core import operations
@@ -81,22 +78,6 @@ def remove_local_material() -> list[Path]:
     return gone
 
 
-@dataclass
-class VPSInfo:
-    server_ip: str
-    key_path: Path
-    region: str
-
-
-def run(cmd: list[str], capture: bool = True, check: bool = True) -> str:
-    result = subprocess.run(cmd, capture_output=capture, text=True, check=check)
-    return result.stdout.strip() if capture else ""
-
-
-def aws(args: list[str], profile: str, region: str) -> str:
-    return run(["aws", "lightsail", *args, "--profile", profile, "--region", region])
-
-
 def stop(region: str = DEFAULT_REGION, profile: str = DEFAULT_PROFILE, *,
          client: LightsailClient | None = None) -> None:
     """Stop the instance, keeping disk, WireGuard keys and static IP. Still billed. Devices are not
@@ -120,66 +101,3 @@ def start(region: str = DEFAULT_REGION, profile: str = DEFAULT_PROFILE) -> str:
         raise (TimeoutError if str(e).startswith("timeout") else RuntimeError)(str(e)) from e
     print(f"✅ {out.message}")
     return out.details["ip"]
-
-
-def get_server_public_key(server_ip: str, key_path: Path) -> str:
-    return run([
-        "ssh", "-i", str(key_path), "-o", "StrictHostKeyChecking=no",
-        f"ubuntu@{server_ip}", "sudo cat /etc/wireguard/server_public.key",
-    ])
-
-
-def used_peer_ips(server_ip: str, key_path: Path) -> set[str]:
-    """Peer IPs claimed in the server's wg0.conf.
-
-    Reads the config file rather than `wg show`: when two peers claim the same
-    IP, `wg show` reports the loser as `(none)` and would hide the collision.
-    """
-    return parse_allowed_ips(run([
-        "ssh", "-i", str(key_path), "-o", "StrictHostKeyChecking=no",
-        f"ubuntu@{server_ip}", "sudo cat /etc/wireguard/wg0.conf",
-    ]))
-
-
-def add_peer(server_ip: str, key_path: Path, peer_ip: str) -> tuple[str, str]:
-    """Generate keypair on server, add peer. Returns (private_key, public_key)."""
-    private = run([
-        "ssh", "-i", str(key_path), "-o", "StrictHostKeyChecking=no",
-        f"ubuntu@{server_ip}", "wg genkey",
-    ])
-    public = subprocess.run(
-        ["ssh", "-i", str(key_path), "-o", "StrictHostKeyChecking=no",
-         f"ubuntu@{server_ip}", "wg pubkey"],
-        input=private, capture_output=True, text=True, check=True,
-    ).stdout.strip()
-
-    peer_conf = f"""wg set wg0 peer {public} allowed-ips {peer_ip}/32
-grep -q "{public}" /etc/wireguard/wg0.conf 2>/dev/null || {{
-  echo "" >> /etc/wireguard/wg0.conf
-  echo "[Peer]" >> /etc/wireguard/wg0.conf
-  echo "PublicKey = {public}" >> /etc/wireguard/wg0.conf
-  echo "AllowedIPs = {peer_ip}/32" >> /etc/wireguard/wg0.conf
-}}"""
-    subprocess.run(
-        ["ssh", "-i", str(key_path), "-o", "StrictHostKeyChecking=no",
-         f"ubuntu@{server_ip}", "sudo bash -s"],
-        input=peer_conf, capture_output=True, text=True, check=True,
-    )
-    return private, public
-
-
-def remove_peer(server_ip: str, key_path: Path, peer_public_key: str) -> None:
-    """Remove a WireGuard peer from the server."""
-    remove_script = f"""
-wg set wg0 peer {peer_public_key} remove
-sed -i '/\\[Peer\\]/{{
-  N; /PublicKey = {peer_public_key}/{{
-    N; d
-  }}
-}}' /etc/wireguard/wg0.conf
-"""
-    subprocess.run(
-        ["ssh", "-i", str(key_path), "-o", "StrictHostKeyChecking=no",
-         f"ubuntu@{server_ip}", "sudo bash -s"],
-        input=remove_script, capture_output=True, text=True, check=True,
-    )

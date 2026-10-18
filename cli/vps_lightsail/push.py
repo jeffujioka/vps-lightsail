@@ -78,9 +78,10 @@ def disconnect_device(device: Device, token: str) -> PushResult:
 
 def get_status(device: Device, token: str) -> CompanionStatus | None:
     # GET /status; None on v1 (404) or network error — index R14: unknown keys are ignored
+    headers = {"Authorization": f"Bearer {token}"} if token else {}   # a trailing-space header is illegal
     try:
         resp = httpx.get(f"http://{device.ip}:{device.port}/status",
-                         headers={"Authorization": f"Bearer {token}"}, timeout=STATUS_TIMEOUT_S)
+                         headers=headers, timeout=STATUS_TIMEOUT_S)
     except httpx.HTTPError as e:
         log.warning("companion %s: GET /status failed (%s)", device.name, type(e).__name__)
         return None
