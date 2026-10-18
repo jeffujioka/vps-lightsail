@@ -24,7 +24,8 @@ import paho.mqtt.client as mqtt
 import pytest
 import yaml
 
-from vps_lightsail.core.fakes import locked, read_json, write_json
+from vps_lightsail.core.fakes import DEVICES_FILE, locked, read_json, write_json
+from tests.e2e.fake_companion import FakeCompanion
 
 E2E_DIR = Path(__file__).resolve().parent
 MOSQUITTO_DIR = E2E_DIR / "mosquitto"
@@ -332,6 +333,12 @@ class FakeWorld:
     def patch(self, **top_level) -> None:
         self._edit(self.lightsail, lambda doc: doc.update(top_level))
 
+    def set_devices(self, records: list[dict]) -> None:
+        """DIR/devices.json: the mDNS records the agent's FakeDiscovery returns (index R7, §5.5)."""
+        path = self.dir / DEVICES_FILE
+        with locked(path):
+            write_json(path, list(records))
+
     def calls(self, method: str | None = None) -> list[dict]:
         return [c for c in self.read().get("calls", []) if method in (None, c["method"])]
 
@@ -413,3 +420,15 @@ def agent_authed(clean_broker_auth: Broker, fake_world: FakeWorld, tmp_path: Pat
                                                 "companion_scan_seconds": 1, "poll_seconds": 1}})
     yield runner
     runner.close()
+
+
+# --- plan 05b2: the fake companion (index §5.5/§5.6, R7, R26) -------------------------------------
+@pytest.fixture
+def fake_companion(fake_world: FakeWorld) -> Iterator[FakeCompanion]:
+    """A started FakeCompanion (api 2, TXT token fake-txt-token, name ShieldVPN); its record is the only
+    entry of DIR/devices.json, which is all the agent's scan sees under --fake (never the real Shield)."""
+    companion = FakeCompanion(fake_world)
+    companion.start()
+    fake_world.set_devices([companion.device_record()])
+    yield companion
+    companion.stop()
