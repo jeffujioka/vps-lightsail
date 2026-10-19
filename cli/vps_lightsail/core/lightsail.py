@@ -190,6 +190,7 @@ class Boto3Lightsail:
         self.region = region
         self._client = boto3.Session(profile_name=profile, region_name=region).client(
             "lightsail", config=copy.deepcopy(BOTO_CONFIG))
+        self._default_key_cache: str | None = None
 
     def get_instance(self, name: str) -> InstanceInfo | None:
         try:
@@ -219,10 +220,21 @@ class Boto3Lightsail:
                                      "Message": f"bundle {bundle_id!r} not found in {self.region}"}},
                           "GetBundles")
 
+    def _default_private_key(self) -> str:
+        """The account's persistent default key pair for this region (cached: a stable, free, non-
+        rotating AWS resource — D1, no per-request charge). Confirmed live 2026-10-19: this account's
+        instances trust this key for SSH, not the ephemeral certificate GetInstanceAccessDetails also
+        returns (that path is independently confirmed broken for this account — AWS's own docs call
+        this failure class "Host key or certificate mismatch", remediable only via the console's
+        "Reset record" or an AWS Support case, neither reachable from here)."""
+        if self._default_key_cache is None:
+            self._default_key_cache = self._client.download_default_key_pair()["privateKeyBase64"]
+        return self._default_key_cache
+
     def get_access_details(self, name: str) -> AccessDetails:
         raw = self._client.get_instance_access_details(instanceName=name, protocol="ssh")["accessDetails"]
-        return AccessDetails(ip=raw["ipAddress"], username=raw["username"], private_key=raw["privateKey"],
-                             cert_key=raw.get("certKey"),
+        return AccessDetails(ip=raw["ipAddress"], username=raw["username"],
+                             private_key=self._default_private_key(), cert_key=None,
                              host_keys=[f"{k['algorithm']} {k['publicKey']}" for k in raw.get("hostKeys", [])])
 
     def _sums(self, name: str, metric: str, period: int, start: datetime, end: datetime,

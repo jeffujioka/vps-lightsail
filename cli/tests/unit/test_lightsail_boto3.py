@@ -90,16 +90,33 @@ def test_get_bundle_follows_pages_and_an_unknown_bundle_raises(stubbed):
         client.get_bundle("nano_9_9")
 
 
-def test_get_access_details_maps_certificate_and_host_keys(stubbed):
+def test_get_access_details_uses_the_default_key_pair_not_the_ephemeral_cert(stubbed):
     client, stub = stubbed
     stub.add_response("get_instance_access_details", {"accessDetails": {
         "ipAddress": IP, "username": "ubuntu", "privateKey": "-----BEGIN RSA PRIVATE KEY-----",
         "certKey": "ssh-rsa-cert-v01@openssh.com AAAA",
         "hostKeys": [{"algorithm": "ssh-ed25519", "publicKey": "AAAAC3"}, {"algorithm": "ssh-rsa", "publicKey": "AAAAB3"}]}},
         {"instanceName": NAME, "protocol": "ssh"})
+    stub.add_response("download_default_key_pair",
+                      {"privateKeyBase64": "-----BEGIN DEFAULT KEY-----", "publicKeyBase64": "ssh-rsa AAAA"}, {})
     assert client.get_access_details(NAME) == AccessDetails(
-        IP, "ubuntu", "-----BEGIN RSA PRIVATE KEY-----", "ssh-rsa-cert-v01@openssh.com AAAA",
+        IP, "ubuntu", "-----BEGIN DEFAULT KEY-----", None,
         ["ssh-ed25519 AAAAC3", "ssh-rsa AAAAB3"])
+
+
+def test_default_key_pair_is_fetched_once_and_cached(stubbed):
+    client, stub = stubbed
+    stub.add_response("get_instance_access_details", {"accessDetails": {
+        "ipAddress": IP, "username": "ubuntu", "privateKey": "-----BEGIN RSA PRIVATE KEY-----",
+        "hostKeys": []}}, {"instanceName": NAME, "protocol": "ssh"})
+    stub.add_response("download_default_key_pair",
+                      {"privateKeyBase64": "-----BEGIN DEFAULT KEY-----", "publicKeyBase64": "ssh-rsa AAAA"}, {})
+    stub.add_response("get_instance_access_details", {"accessDetails": {
+        "ipAddress": IP, "username": "ubuntu", "privateKey": "-----BEGIN RSA PRIVATE KEY-----",
+        "hostKeys": []}}, {"instanceName": NAME, "protocol": "ssh"})
+    first = client.get_access_details(NAME)
+    second = client.get_access_details(NAME)
+    assert first.private_key == second.private_key == "-----BEGIN DEFAULT KEY-----"
 
 
 def test_network_bytes_asks_hourly_sums_and_sorts(stubbed):
