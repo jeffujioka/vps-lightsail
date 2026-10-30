@@ -1,0 +1,194 @@
+blueprint:
+  name: "VPS Lightsail: server unreachable"
+  description: >-
+    Notifies when the vps-lightsail WireGuard server stays in a problem state
+    (unreachable, WireGuard down) for N minutes, and sends a recovery notice
+    when it is healthy again, only if the alert was sent. Transitional states
+    caused by user operations (creating, provisioning, starting, stopping,
+    stopped, destroying, nonexistent) never alert.
+    Requires vps-lightsail-agent (https://github.com/guicheffer/vps-lightsail).
+  domain: automation
+  author: vps-lightsail contributors
+  source_url: https://github.com/guicheffer/vps-lightsail/blob/main/homeassistant/blueprints/automation/vps_lightsail/unreachable.yaml
+  homeassistant:
+    min_version: "2024.10.0"
+  input:
+    detection:
+      name: Detection
+      icon: mdi:server-network-off
+      input:
+        state_entity:
+          name: VPS state sensor
+          description: The enum sensor published by vps-lightsail-agent.
+          default: sensor.vps_lightsail_state
+          selector:
+            entity:
+              filter:
+                - domain: sensor
+                  integration: mqtt
+        problem_states:
+          name: Problem states
+          description: >-
+            States that count as a problem. When the sensor is "error", its
+            underlying_state attribute is checked too, so an error on top of an
+            unreachable server still alerts as unreachable.
+          default: [unreachable, wg_down]
+          selector:
+            select:
+              multiple: true
+              options:
+                - label: Unreachable (SSH or status check failing)
+                  value: unreachable
+                - label: WireGuard down (server up, wg-quick@wg0 inactive)
+                  value: wg_down
+                - label: Error (last agent operation failed; sticky until the next command)
+                  value: error
+        problem_minutes:
+          name: Minutes before alerting
+          default: 10
+          selector:
+            number:
+              min: 1
+              max: 240
+              step: 1
+              unit_of_measurement: min
+              mode: box
+        ignore_during_operation:
+          name: Ignore while an agent operation is running
+          description: No alert while the agent reports an in-flight start/stop/create/destroy.
+          default: true
+          selector:
+            boolean: {}
+        send_recovery:
+          name: Send a recovery notice
+          default: true
+          selector:
+            boolean: {}
+    targets:
+      name: Notification targets
+      icon: mdi:bell-ring
+      description: Fill at least one. Every filled target is notified.
+      input:
+        notify_devices:
+          name: Mobile app devices
+          description: Devices running the Home Assistant companion app.
+          default: []
+          selector:
+            device:
+              multiple: true
+              filter:
+                - integration: mobile_app
+        notify_entities:
+          name: Notify entities
+          description: Any notify entity (sent with notify.send_message).
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: notify
+        notify_action:
+          name: Legacy notify action
+          description: >-
+            Optional notify action name, e.g. notify.notify,
+            notify.persistent_notification or notify.telegram_me.
+            Leave empty to skip.
+          default: ""
+          selector:
+            text: {}
+
+mode: single
+max_exceeded: silent
+
+trigger_variables:
+  state_entity: !input state_entity
+  problem_states: !input problem_states
+  ignore_during_operation: !input ignore_during_operation
+
+triggers:
+  - trigger: template
+    id: problem
+    value_template: >-
+      {% set s = states(state_entity) %}
+      {% set eff = state_attr(state_entity, 'underlying_state') if s == 'error' else s %}
+      {% set op = state_attr(state_entity, 'operation') %}
+      {{ (s in problem_states or eff in problem_states)
+         and not (ignore_during_operation and op not in [none, '']) }}
+    for:
+      minutes: !input problem_minutes
+
+variables:
+  notify_devices: !input notify_devices
+  notify_entities: !input notify_entities
+  notify_action: !input notify_action
+  send_recovery: !input send_recovery
+  problem_minutes: !input problem_minutes
+  tag: vps_lightsail_unreachable
+  interruption: time-sensitive
+  vps_state: "{{ states(state_entity) }}"
+  vps_eff: >-
+    {{ state_attr(state_entity, 'underlying_state') if vps_state == 'error' else vps_state }}
+  problem_since: >-
+    {{ state_attr(state_entity, 'since')
+       or (now() - timedelta(minutes=problem_minutes | int)).isoformat() }}
+  title: "VPS Lightsail: {{ vps_eff | replace('_', ' ') }}"
+  message: >-
+    {{ vps_eff | replace('_', ' ') | capitalize }} for {{ problem_minutes | int }}+ min
+    (since {{ (as_datetime(problem_since) | as_local).strftime('%d/%m %H:%M') }}).
+    IP {{ state_attr(state_entity, 'ip') or 'none' }},
+    region {{ state_attr(state_entity, 'region') or '?' }}.
+    {{- ' Error: ' ~ state_attr(state_entity, 'error') if state_attr(state_entity, 'error') else '' }}
+
+actions:
+  - &notify_all
+    alias: Notify every configured target
+    sequence:
+      - repeat:
+          for_each: "{{ notify_devices }}"
+          sequence:
+            - action: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
+              continue_on_error: true
+              data:
+                title: "{{ title }}"
+                message: "{{ message }}"
+                data:
+                  tag: "{{ tag }}"
+                  group: vps_lightsail
+                  push:
+                    interruption-level: "{{ interruption }}"
+      - if: "{{ notify_entities | count > 0 }}"
+        then:
+          - action: notify.send_message
+            continue_on_error: true
+            target:
+              entity_id: "{{ notify_entities }}"
+            data:
+              title: "{{ title }}"
+              message: "{{ message }}"
+      - if: "{{ notify_action | trim | length > 0 }}"
+        then:
+          - action: >-
+              {% set a = notify_action | trim %}{{ a if '.' in a else 'notify.' ~ a }}
+            continue_on_error: true
+            data:
+              title: "{{ title }}"
+              message: "{{ message }}"
+  - if: "{{ send_recovery }}"
+    then:
+      - alias: Wait until the episode ends (unavailable/unknown do not end it)
+        wait_for_trigger:
+          - trigger: template
+            value_template: >-
+              {% set s = states(state_entity) %}
+              {% set eff = state_attr(state_entity, 'underlying_state') if s == 'error' else s %}
+              {{ s not in ['unavailable', 'unknown']
+                 and s not in problem_states and eff not in problem_states }}
+      - if: "{{ is_state(state_entity, 'healthy') }}"
+        then:
+          - variables:
+              interruption: active
+              title: "VPS Lightsail: recovered"
+              message: >-
+                Healthy again after ~{{ ((now() - as_datetime(problem_since)).total_seconds() / 60)
+                | round(0) | int }} min. IP {{ state_attr(state_entity, 'ip') or 'none' }}.
+          - *notify_all
