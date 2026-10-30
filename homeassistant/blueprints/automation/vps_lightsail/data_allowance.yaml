@@ -1,0 +1,148 @@
+blueprint:
+  name: "VPS Lightsail: data allowance threshold"
+  description: >-
+    Notifies once per UTC month when the vps-lightsail data transfer reaches a
+    percentage of the Lightsail bundle allowance. Create one automation per
+    threshold (for example 80 and 100). The month rollover re-arms it by itself.
+  domain: automation
+  author: vps-lightsail contributors
+  source_url: https://github.com/guicheffer/vps-lightsail/blob/main/homeassistant/blueprints/automation/vps_lightsail/data_allowance.yaml
+  homeassistant:
+    min_version: "2024.10.0"
+  input:
+    source:
+      name: Source
+      icon: mdi:chart-donut
+      input:
+        allowance_entity:
+          name: Allowance used (%)
+          default: sensor.vps_lightsail_allowance_pct
+          selector:
+            entity:
+              filter:
+                - domain: sensor
+                  integration: mqtt
+        threshold_pct:
+          name: Threshold
+          default: 80
+          selector:
+            number:
+              min: 1
+              max: 500
+              step: 1
+              unit_of_measurement: "%"
+              mode: box
+        data_entity:
+          name: Data used this month (GB)
+          default: sensor.vps_lightsail_data_total
+          selector:
+            entity:
+              filter:
+                - domain: sensor
+                  integration: mqtt
+        cost_entity:
+          name: Projected month cost
+          default: sensor.vps_lightsail_cost_projected
+          selector:
+            entity:
+              filter:
+                - domain: sensor
+                  integration: mqtt
+    targets:
+      name: Notification targets
+      icon: mdi:bell-ring
+      description: Fill at least one. Every filled target is notified.
+      input:
+        notify_devices:
+          name: Mobile app devices
+          default: []
+          selector:
+            device:
+              multiple: true
+              filter:
+                - integration: mobile_app
+        notify_entities:
+          name: Notify entities
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: notify
+        notify_action:
+          name: Legacy notify action
+          default: ""
+          selector:
+            text: {}
+
+mode: single
+max_exceeded: silent
+
+trigger_variables:
+  allowance_entity: !input allowance_entity
+  threshold_pct: !input threshold_pct
+
+triggers:
+  - trigger: template
+    id: crossed
+    value_template: >-
+      {{ (states(allowance_entity) | float(-1)) >= (threshold_pct | float) }}
+
+conditions:
+  - alias: Not already notified in this UTC month (the agent's ledger month)
+    condition: template
+    value_template: >-
+      {{ (as_timestamp(this.attributes.last_triggered, 0) | timestamp_custom('%Y-%m', false))
+         != utcnow().strftime('%Y-%m') }}
+
+variables:
+  notify_devices: !input notify_devices
+  notify_entities: !input notify_entities
+  notify_action: !input notify_action
+  data_entity: !input data_entity
+  cost_entity: !input cost_entity
+  pct: "{{ states(allowance_entity) | float(0) }}"
+  gb: "{{ states(data_entity) | float(0) }}"
+  allowance_gb: "{{ (gb * 100 / pct) | round(0) | int if pct > 0 else 0 }}"
+  cost: "{{ states(cost_entity) | float(none) }}"
+  tag: "vps_lightsail_allowance_{{ threshold_pct | int }}"
+  interruption: "{{ 'time-sensitive' if (threshold_pct | float) >= 100 else 'active' }}"
+  title: "VPS Lightsail: {{ threshold_pct | int }} % of data allowance"
+  message: >-
+    {{ pct | round(1) }} % used: {{ gb | round(1) }} GB of ~{{ allowance_gb }} GB this month (UTC).
+    Projected cost {{ '$%.2f' | format(cost) if cost is not none else 'n/a' }} (est.).
+    {{- ' Outbound transfer above the allowance is billed per GB.' if pct >= 100 else '' }}
+
+actions:
+  - alias: Notify every configured target
+    sequence:
+      - repeat:
+          for_each: "{{ notify_devices }}"
+          sequence:
+            - action: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
+              continue_on_error: true
+              data:
+                title: "{{ title }}"
+                message: "{{ message }}"
+                data:
+                  tag: "{{ tag }}"
+                  group: vps_lightsail
+                  push:
+                    interruption-level: "{{ interruption }}"
+      - if: "{{ notify_entities | count > 0 }}"
+        then:
+          - action: notify.send_message
+            continue_on_error: true
+            target:
+              entity_id: "{{ notify_entities }}"
+            data:
+              title: "{{ title }}"
+              message: "{{ message }}"
+      - if: "{{ notify_action | trim | length > 0 }}"
+        then:
+          - action: >-
+              {% set a = notify_action | trim %}{{ a if '.' in a else 'notify.' ~ a }}
+            continue_on_error: true
+            data:
+              title: "{{ title }}"
+              message: "{{ message }}"
