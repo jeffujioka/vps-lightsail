@@ -17,6 +17,7 @@ import aiohttp
 
 BLUEPRINTS = ("unreachable.yaml", "data_allowance.yaml", "agent_offline.yaml")
 VPS_TITLE, E2E_PREFIX = "VPS Lightsail", "vps_lightsail_e2e_"
+WS_TIMEOUT = 30  # seconds per websocket read
 EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 Step = Callable[[], Awaitable[Any]]
 Scenario = Callable[["HA"], Awaitable[None]]
@@ -38,10 +39,10 @@ class HA:
     async def __aenter__(self) -> HA:
         self._session = aiohttp.ClientSession(headers={"Authorization": f"Bearer {self._token}"})
         try:
-            self._ws = await self._session.ws_connect(f"{self.url}/api/websocket")
-            await self._ws.receive_json()  # auth_required
+            self._ws = await self._session.ws_connect(f"{self.url}/api/websocket", heartbeat=30)
+            await self._ws.receive_json(timeout=WS_TIMEOUT)  # auth_required
             await self._ws.send_json({"type": "auth", "access_token": self._token})
-            if (reply := await self._ws.receive_json()).get("type") != "auth_ok":
+            if (reply := await self._ws.receive_json(timeout=WS_TIMEOUT)).get("type") != "auth_ok":
                 raise HAError(f"websocket auth failed: {reply.get('type')}")
         except BaseException:
             await self._session.close()
@@ -70,8 +71,8 @@ class HA:
         async with self._lock:
             self._last_id += 1
             await self._ws.send_json({"id": self._last_id, **cmd})
-            while (msg := await self._ws.receive_json()).get("id") != self._last_id \
-                    or msg.get("type") != "result":
+            while (msg := await self._ws.receive_json(timeout=WS_TIMEOUT)).get("id") != \
+                    self._last_id or msg.get("type") != "result":
                 pass  # unrelated event
         if not msg.get("success"):
             raise HAError(f"ws {cmd.get('type')} failed: {msg.get('error')}")

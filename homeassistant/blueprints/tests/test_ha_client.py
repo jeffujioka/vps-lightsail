@@ -70,3 +70,25 @@ def test_run_e2e_reports_every_scenario_and_always_cleans_up(monkeypatch, capsys
     assert asyncio.run(ha_client.run_e2e(bad_setup, {"X1 fine": ok}, **kw)) == 1
     assert "FAIL setup" in capsys.readouterr().out
     fake.delete_instance.assert_awaited_with("vps_lightsail_e2e_x", missing_ok=True)
+
+def test_ws_connects_with_heartbeat_and_bounds_every_read(tmp_path, monkeypatch):
+    token = tmp_path / "token"
+    token.write_text("t")
+    ws = AsyncMock()
+    ws.receive_json.side_effect = [{"type": "auth_required"}, {"type": "auth_ok"},
+                                   {"id": 1, "type": "result", "success": True, "result": 7}]
+    session = AsyncMock()
+    session.ws_connect.return_value = ws
+
+    monkeypatch.setattr(ha_client.aiohttp, "ClientSession", lambda **_: session)
+
+    async def run():
+        ha = ha_client.HA("http://x", str(token))
+        async with ha:
+            return await ha.ws_cmd(type="ping")
+
+    assert asyncio.run(run()) == 7
+    assert session.ws_connect.call_args.kwargs["heartbeat"] == 30
+    assert ha_client.WS_TIMEOUT == 30
+    assert all(c.kwargs == {"timeout": 30} for c in ws.receive_json.call_args_list)
+    assert ws.receive_json.call_count == 3
