@@ -55,6 +55,13 @@ def _daemon_thread(fn: Callable[[], None], name: str) -> None:
     threading.Thread(target=fn, name=name, daemon=True).start()
 
 
+def _valid_ts(value: object) -> bool:
+    try:
+        return isinstance(value, str) and datetime.fromisoformat(value).tzinfo is not None
+    except ValueError:
+        return False
+
+
 def _parse(payload: bytes) -> dict | None:
     try:
         doc = json.loads(payload.decode("utf-8"))
@@ -87,6 +94,7 @@ class CommandRunner:
         self._window_opened = False
         self._window_until: float | None = None
         self._internal = False                   # the in-flight run is try_run_internal's (06a)
+        self._closed = False                     # after shutdown() nothing is accepted
 
     def register(self, cmd: Command) -> None:
         self._commands[cmd.suffix] = cmd
@@ -139,6 +147,8 @@ class CommandRunner:
             return
         now = self._clock.now()
         with self._lock:
+            if self._closed:
+                return
             cmd, cur = self._commands.get(suffix), self._inflight
             if cmd is None:                                      # rule 4
                 self._publish(result_payload(suffix, "rejected", f"unknown command: {suffix}", now, now))
@@ -223,7 +233,7 @@ class CommandRunner:
             return
         action, now = retained["action"], self._clock.now()
         payload = result_payload(action, "interrupted", f"interrupted: agent restarted during {action}", now, now)
-        if isinstance(retained.get("started_at"), str):
+        if _valid_ts(retained.get("started_at")):
             payload["started_at"] = retained["started_at"]       # same action/started_at as the dead run
         with self._lock:
             if self._inflight is not None and not self._internal:   # a live command owns the topic
@@ -234,6 +244,7 @@ class CommandRunner:
     def shutdown(self, grace_s: float = 2.0) -> None:            # SIGTERM, before "offline" (§2.7 step 3)
         self._idle.wait(grace_s)
         with self._lock:
+            self._closed = True
             cur, internal = self._inflight, self._internal
             if cur is None:
                 return
@@ -252,7 +263,7 @@ class CommandRunner:
         result is published only when the handler returns a non-empty message (M12)."""
         now = self._clock.now()
         with self._lock:
-            if self._inflight is not None:
+            if self._inflight is not None or self._closed:
                 return False
             self._generation += 1
             generation, self._internal = self._generation, True

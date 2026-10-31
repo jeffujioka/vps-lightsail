@@ -259,8 +259,6 @@ def test_recover_never_interrupts_a_live_operation(held):                  # Rev
 
 def test_shutdown_in_flight_publishes_interrupted(held):
     held.add("start", ok)
-    held.runner.shutdown(grace_s=0)
-    assert held.results == []                                    # idle: nothing to report
     held.press("start")
     held.clock.advance(3)
     held.runner.shutdown(grace_s=0)
@@ -269,3 +267,17 @@ def test_shutdown_in_flight_publishes_interrupted(held):
                                 "finished_at": "2026-09-26T10:00:03Z", "details": {}}
     held.pending.pop()[1]()                                      # the daemon worker ending later is discarded
     assert held.outcomes()[-1][1] == "interrupted" and held.runner.snapshot() == OpSnapshot()
+
+
+def test_no_command_accepted_after_shutdown(held):
+    held.add("start", ok)
+    held.runner.shutdown(grace_s=0)
+    held.press("start")
+    assert held.results == [] and held.pending == [] and held.runner.snapshot() == OpSnapshot()
+    assert held.runner.try_run_internal("repair", lambda _p: OpOutcome(""), 1.0) is False
+
+
+@pytest.mark.parametrize("started_at", ["garbage", "", "2026-13-45T99:00:00Z", "2026-09-26T09:58:00"])
+def test_recover_replaces_an_invalid_started_at(rig, started_at):
+    rig.runner.recover({"action": "start", "ok": None, "message": "running", "started_at": started_at})
+    assert rig.results[0]["outcome"] == "interrupted" and rig.results[0]["started_at"] == T0
