@@ -410,3 +410,38 @@ def test_06_popup_gets_only_the_connect_disconnect_row():
 def test_06_dashboard_config_holds_the_six_slice06_ids():
     config = ad.dashboard_config(load("vpn-dashboard.yaml"), load("vpn-cards.yaml"))
     assert SIX_06 <= ids_in(config)                                     # spec-06 §9.3 "the vpn dashboard contains them"
+
+
+def test_backup_stamp_has_microseconds(tmp_path):
+    ad.make_backup(Path("/st"), tmp_path, run=lambda cmd, check=False: subprocess.CompletedProcess(cmd, 1))({})
+    (dump_dir,) = tmp_path.iterdir()
+    assert re.fullmatch(r"\d{20}", dump_dir.name)
+
+
+@pytest.mark.parametrize("code, want", [(0, 0), (1, 1), (2, 2), (255, 2), (130, 2)])
+def test_relay_maps_codes_outside_the_exit_set_to_2(monkeypatch, code, want):
+    monkeypatch.delenv("VPS_LIGHTSAIL_RELAYED", raising=False)
+    assert ad.relay(["--check"], run=lambda cmd: subprocess.CompletedProcess(cmd, code)) == want
+
+
+def test_client_closes_the_session_when_connect_or_auth_fails(monkeypatch):
+    import sys
+    import types
+    closed = []
+
+    class Session:
+        async def ws_connect(self, *a, **k):
+            raise OSError("down")
+
+        async def close(self):
+            closed.append(True)
+
+    monkeypatch.setitem(sys.modules, "aiohttp", types.SimpleNamespace(ClientSession=Session))
+
+    async def go():
+        async with ad.HAClient("http://x", "t"):
+            pass
+
+    with pytest.raises(OSError):
+        asyncio.run(go())
+    assert closed == [True]

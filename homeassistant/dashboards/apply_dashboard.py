@@ -182,11 +182,15 @@ class HAClient:
     async def __aenter__(self) -> "HAClient":
         import aiohttp  # lazy: unit tests never open a socket
         self._session = aiohttp.ClientSession()
-        self._ws = await self._session.ws_connect(self.url, max_msg_size=0)
-        await self._ws.receive_json()                                   # auth_required
-        await self._ws.send_json({"type": "auth", "access_token": self._token})
-        if (await self._ws.receive_json()).get("type") != "auth_ok":
-            raise HAError("auth rejected")
+        try:
+            self._ws = await self._session.ws_connect(self.url, max_msg_size=0)
+            await self._ws.receive_json()                               # auth_required
+            await self._ws.send_json({"type": "auth", "access_token": self._token})
+            if (await self._ws.receive_json()).get("type") != "auth_ok":
+                raise HAError("auth rejected")
+        except BaseException:
+            await self._session.close()
+            raise
         return self
 
     async def __aexit__(self, *exc) -> None:
@@ -280,7 +284,7 @@ async def restore(ha, dump: Path) -> int:
 def make_backup(storage: Path, dump_root: Path, run=subprocess.run):
     """spec-02 §8.6 step 1: WS dumps under dump_root/<ts>/, then `sudo -n cp -p` of each .storage file."""
     def backup(dumps: dict) -> None:
-        ts = dt.datetime.now().strftime("%Y%m%d%H%M%S")
+        ts = dt.datetime.now().strftime("%Y%m%d%H%M%S%f")
         (out := dump_root / ts).mkdir(parents=True, exist_ok=True)
         for url, config in dumps.items():
             (out / f"{url}.json").write_text(json.dumps({"url_path": url, "config": config}, indent=1))
@@ -299,7 +303,8 @@ def relay(argv: list[str], run=None) -> int:
     cmd = ("cd ~/projects/guicheffer/vps-lightsail/homeassistant/dashboards && VPS_LIGHTSAIL_RELAYED=1 "
            "~/.local/bin/uv run -q --script apply_dashboard.py " + " ".join(map(shlex.quote, argv)))
     host = os.environ.get("VPS_LIGHTSAIL_HOST", "jeff")
-    return (run or subprocess.run)(["ssh", "-o", "BatchMode=yes", host, cmd]).returncode
+    code = (run or subprocess.run)(["ssh", "-o", "BatchMode=yes", host, cmd]).returncode
+    return code if code in (0, 1, 2) else 2                             # e.g. ssh's 255 on connection failure
 
 
 async def run_mode(args, peers, client) -> int:
