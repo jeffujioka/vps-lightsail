@@ -2,7 +2,10 @@
 """Offline tests for production.py (spec-07 §7.3 bodies, §8.4 smoke rules)."""
 import re
 
-from production import ENTITIES, config_problems, production_instances, state_problems
+import pytest
+
+from production import (ENTITIES, config_problems, error_runs, parser, production_instances,
+                        state_problems)
 
 DEV = "0123456789abcdef0123456789abcdef"
 
@@ -39,3 +42,16 @@ def test_config_check_flags_a_leftover_test_setting_and_a_missing_instance():
     assert [p.split(":")[0] for p in config_problems(expected, stored)] == ["vps_lightsail_unreachable"]
     assert config_problems(expected, {c: {"id": c, **b} for c, b in expected.items()}) == []
     assert config_problems(expected, {})[0].startswith("vps_lightsail_unreachable: stored nothing")
+
+def test_error_runs_only_flags_real_errors():
+    traces = [{"run_id": "a", "script_execution": "error"}, {"run_id": "b", "error": "boom"},
+              {"run_id": "c", "error": None}, {"run_id": "d", "error": ""},
+              {"run_id": "e", "script_execution": "finished"}]
+    assert error_runs(traces) == ["a", "b"]
+
+def test_only_rejects_unknown_id(capsys):
+    assert parser().parse_args(["apply", "--device", DEV, "--only", "vps_lightsail_agent_offline"]).only
+    with pytest.raises(SystemExit) as e:
+        parser().parse_args(["apply", "--device", DEV, "--only", "nope"])
+    assert e.value.code == 2
+    assert "nope" in capsys.readouterr().err

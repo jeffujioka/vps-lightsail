@@ -50,6 +50,18 @@ def config_problems(expected: dict[str, dict], actual: dict[str, dict | None]) -
             problems.append(f"{config_id}: stored {got or 'nothing'} != expected {body}")
     return problems
 
+def error_runs(traces: list[dict]) -> list[str]:
+    return [t["run_id"] for t in traces if t.get("script_execution") == "error" or t.get("error")]
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("command", choices=("apply", "smoke"))
+    p.add_argument("--device", action="append", required=True)
+    p.add_argument("--only", choices=tuple(production_instances([])))
+    p.add_argument("--unreachable-minutes", type=int)
+    p.add_argument("--quiet-seconds", type=float, default=300)
+    return p
+
 async def apply(devices: list[str], only: str | None, unreachable_minutes: int | None) -> int:
     async with HA() as ha:
         for config_id, body in production_instances(devices, unreachable_minutes).items():
@@ -77,8 +89,7 @@ async def smoke(devices: list[str], quiet_seconds: float) -> int:
         print(f"waiting {quiet_seconds:.0f}s of normal operation", flush=True)
         await asyncio.sleep(0 if problems else quiet_seconds)
         for config_id in expected:
-            errors = [t["run_id"] for t in await ha.traces(config_id)
-                      if t.get("script_execution") == "error" or "error" in t]
+            errors = error_runs(await ha.traces(config_id))
             if errors:
                 problems.append(f"{config_id}: runs with errors {errors}")
     for problem in problems:
@@ -87,12 +98,6 @@ async def smoke(devices: list[str], quiet_seconds: float) -> int:
     return 1 if problems else 0
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("apply", "smoke"))
-    parser.add_argument("--device", action="append", required=True)
-    parser.add_argument("--only")
-    parser.add_argument("--unreachable-minutes", type=int)
-    parser.add_argument("--quiet-seconds", type=float, default=300)
-    a = parser.parse_args()
+    a = parser().parse_args()
     sys.exit(asyncio.run(apply(a.device, a.only, a.unreachable_minutes) if a.command == "apply"
                          else smoke(a.device, a.quiet_seconds)))
