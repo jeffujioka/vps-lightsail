@@ -89,7 +89,7 @@ class HA:
                         instance_body(config_id, blueprint_path, inputs))
 
     async def delete_instance(self, config_id: str, *, missing_ok: bool = False) -> None:
-        # unknown id → 400 "Resource not found" (HA config view)
+        # unknown id → 400 "Resource not found" (HA config view); any other 400 is swallowed too (accepted)
         await self.rest("DELETE", f"/api/config/automation/config/{config_id}",
                         allow=(400,) if missing_ok else ())
 
@@ -148,10 +148,16 @@ async def dismiss_e2e_notifications(ha: HA, since: datetime, *,
     return chosen
 
 async def cleanup(ha: HA, ids: list[str], entities: list[str]) -> None:
-    for config_id in ids:
-        await ha.delete_instance(config_id, missing_ok=True)
-    for entity_id in entities:
-        await ha.rest("DELETE", f"/api/states/{entity_id}", allow=(404,))
+    errors: list[str] = []
+    steps = [(c, ha.delete_instance(c, missing_ok=True)) for c in ids] + \
+            [(e, ha.rest("DELETE", f"/api/states/{e}", allow=(404,))) for e in entities]
+    for item, step in steps:
+        try:
+            await step
+        except (HAError, aiohttp.ClientError, TimeoutError) as err:
+            errors.append(f"{item}: {err}")
+    if errors:
+        raise HAError("cleanup failed: " + "; ".join(errors))
 
 async def poll(check: Callable[[], Awaitable[tuple[bool, Any]]], timeout: float, what: str,
                interval: float = 2.0) -> Any:  # check() → (done, value); errors show the last value
@@ -217,16 +223,22 @@ async def run_e2e(setup: Scenario, scenarios: dict[str, Scenario], *, ids: list[
                 try:
                     await scenario(ha)
                     print(f"PASS {name}", flush=True)
-                except (AssertionError, TimeoutError, HAError) as err:
+                except Exception as err:
                     failed.append(name.split()[0])
-                    print(f"FAIL {name}: {err}"[:500], flush=True)
+                    kind = "" if isinstance(err, (AssertionError, TimeoutError, HAError)) \
+                        else f"{type(err).__name__}: "
+                    print(f"FAIL {name}: {kind}{err}"[:500], flush=True)
                 if settle is not None:
                     await settle(ha)
-        except (TimeoutError, HAError) as err:
+        except Exception as err:
             failed.append("setup")
-            print(f"FAIL setup: {err}"[:500], flush=True)
+            print(f"FAIL setup: {type(err).__name__}: {err}"[:500], flush=True)
         finally:
-            await cleanup(ha, ids, entities)
+            try:
+                await cleanup(ha, ids, entities)
+            except Exception as err:
+                failed.append("cleanup")
+                print(f"FAIL cleanup: {err}"[:500], flush=True)
             await dismiss_e2e_notifications(ha, start, titles=titles)
     print("RESULT " + (f"FAIL {','.join(failed)}" if failed else "PASS"), flush=True)
     return 1 if failed else 0
@@ -252,8 +264,12 @@ async def cli(cmd: str, args: list[str]) -> int:
         for item in autos + sensors + [f"notification {n['title']}" for n in notes]:
             print(f"LEFTOVER {item}")
         if "--purge" in args:
-            await cleanup(ha, [e.removeprefix("automation.e2e_") for e in autos
-                               if e.startswith(f"automation.e2e_{E2E_PREFIX}")], sensors)
+            try:
+                await cleanup(ha, [e.removeprefix("automation.e2e_") for e in autos
+                                   if e.startswith(f"automation.e2e_{E2E_PREFIX}")], sensors)
+            except HAError as err:
+                print(f"FAIL {err}")
+                return 1
             await dismiss_e2e_notifications(ha, EPOCH)
             print("purged")
             return 0

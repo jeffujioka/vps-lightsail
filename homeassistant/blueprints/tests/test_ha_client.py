@@ -71,6 +71,51 @@ def test_run_e2e_reports_every_scenario_and_always_cleans_up(monkeypatch, capsys
     assert "FAIL setup" in capsys.readouterr().out
     fake.delete_instance.assert_awaited_with("vps_lightsail_e2e_x", missing_ok=True)
 
+def _fake_ha(monkeypatch):
+    fake = AsyncMock()
+    fake.__aenter__.return_value = fake
+    fake.notifications.return_value = {}
+    monkeypatch.setattr(ha_client, "HA", lambda: fake)
+    return fake
+
+def test_cleanup_attempts_every_item_then_raises_one_error():
+    ha = AsyncMock()
+    ha.delete_instance.side_effect = [HAError("a failed"), None]
+    ha.rest.side_effect = [asyncio.TimeoutError()]
+    with pytest.raises(HAError) as err:
+        asyncio.run(ha_client.cleanup(ha, ["i1", "i2"], ["sensor.s1"]))
+    assert ha.delete_instance.await_count == 2 and ha.rest.await_count == 1
+    assert "i1" in str(err.value) and "sensor.s1" in str(err.value) and "i2" not in str(err.value)
+
+def test_run_e2e_continues_past_unexpected_error(monkeypatch, capsys):
+    fake = _fake_ha(monkeypatch)
+
+    async def ok(ha):
+        return None
+
+    async def odd(ha):
+        raise KeyError("missing")
+
+    kw = {"ids": ["x"], "entities": [], "titles": ("T",)}
+    assert asyncio.run(ha_client.run_e2e(ok, {"X1 odd": odd, "X2 fine": ok}, **kw)) == 1
+    out = capsys.readouterr().out
+    assert "FAIL X1 odd: KeyError: 'missing'" in out and "PASS X2 fine" in out
+    assert "RESULT FAIL X1" in out
+    fake.delete_instance.assert_awaited()
+
+def test_run_e2e_cleanup_failure_fails_result_and_still_dismisses(monkeypatch, capsys):
+    fake = _fake_ha(monkeypatch)
+    fake.delete_instance.side_effect = HAError("nope")
+
+    async def ok(ha):
+        return None
+
+    kw = {"ids": ["x"], "entities": [], "titles": ("T",)}
+    assert asyncio.run(ha_client.run_e2e(ok, {"X1 fine": ok}, **kw)) == 1
+    out = capsys.readouterr().out
+    assert "FAIL cleanup:" in out and "RESULT FAIL cleanup" in out
+    fake.notifications.assert_awaited()
+
 def test_ws_connects_with_heartbeat_and_bounds_every_read(tmp_path, monkeypatch):
     token = tmp_path / "token"
     token.write_text("t")
