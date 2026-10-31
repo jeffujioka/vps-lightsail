@@ -55,3 +55,18 @@ def test_only_rejects_unknown_id(capsys):
         parser().parse_args(["apply", "--device", DEV, "--only", "nope"])
     assert e.value.code == 2
     assert "nope" in capsys.readouterr().err
+
+def test_smoke_reports_lost_websocket_instead_of_a_traceback(monkeypatch, capsys):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    import production
+    fake = AsyncMock()
+    fake.__aenter__.return_value = fake
+    fake.ws_cmd.return_value = {}
+    fake.rest.return_value = fake.state.return_value = None
+    fake.traces.side_effect = TimeoutError("read")
+    monkeypatch.setattr(production, "HA", lambda: fake)
+    assert asyncio.run(production.smoke([DEV], 0)) == 1
+    out = capsys.readouterr().out
+    assert "traces unavailable: TimeoutError: read" in out and "SMOKE FAIL" in out

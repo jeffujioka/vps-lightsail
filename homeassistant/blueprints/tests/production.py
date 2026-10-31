@@ -11,7 +11,9 @@ import argparse
 import asyncio
 import sys
 
-from ha_client import HA
+import aiohttp
+
+from ha_client import HA, HAError
 
 ENTITIES = ("sensor.vps_lightsail_state", "sensor.vps_lightsail_allowance_pct",
             "sensor.vps_lightsail_data_total", "sensor.vps_lightsail_cost_projected")
@@ -89,7 +91,11 @@ async def smoke(devices: list[str], quiet_seconds: float) -> int:
         print(f"waiting {quiet_seconds:.0f}s of normal operation", flush=True)
         await asyncio.sleep(0 if problems else quiet_seconds)
         for config_id in expected:
-            errors = error_runs(await ha.traces(config_id))
+            try:
+                errors = error_runs(await ha.traces(config_id))
+            except (HAError, aiohttp.ClientError, TimeoutError) as err:
+                problems.append(f"{config_id}: traces unavailable: {type(err).__name__}: {err}")
+                continue
             if errors:
                 problems.append(f"{config_id}: runs with errors {errors}")
     for problem in problems:

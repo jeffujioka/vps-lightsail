@@ -116,6 +116,18 @@ def test_run_e2e_cleanup_failure_fails_result_and_still_dismisses(monkeypatch, c
     assert "FAIL cleanup:" in out and "RESULT FAIL cleanup" in out
     fake.notifications.assert_awaited()
 
+def test_run_e2e_dismiss_failure_still_prints_result(monkeypatch, capsys):
+    fake = _fake_ha(monkeypatch)
+    fake.notifications.side_effect = TimeoutError("ws dead")
+
+    async def ok(ha):
+        return None
+
+    kw = {"ids": ["x"], "entities": [], "titles": ("T",)}
+    assert asyncio.run(ha_client.run_e2e(ok, {"X1 fine": ok}, **kw)) == 1
+    out = capsys.readouterr().out
+    assert "FAIL dismiss: TimeoutError: ws dead" in out and "RESULT FAIL dismiss" in out
+
 def test_ws_connects_with_heartbeat_and_bounds_every_read(tmp_path, monkeypatch):
     token = tmp_path / "token"
     token.write_text("t")

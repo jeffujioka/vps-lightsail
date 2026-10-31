@@ -239,7 +239,11 @@ async def run_e2e(setup: Scenario, scenarios: dict[str, Scenario], *, ids: list[
             except Exception as err:
                 failed.append("cleanup")
                 print(f"FAIL cleanup: {err}"[:500], flush=True)
-            await dismiss_e2e_notifications(ha, start, titles=titles)
+            try:
+                await dismiss_e2e_notifications(ha, start, titles=titles)
+            except Exception as err:
+                failed.append("dismiss")
+                print(f"FAIL dismiss: {type(err).__name__}: {err}"[:500], flush=True)
     print("RESULT " + (f"FAIL {','.join(failed)}" if failed else "PASS"), flush=True)
     return 1 if failed else 0
 
