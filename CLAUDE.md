@@ -7,9 +7,10 @@ Pick any region → get a dedicated IP there → route traffic through it.
 
 ## FILES
 
-- `setup.sh` — creates VPS + WireGuard from scratch
-- `teardown.sh` — destroys everything, no charges left
-- `swap-ip.sh` — swap static IP (if flagged or just want a fresh one)
+- `setup.sh` / `teardown.sh` / `fetch-config.sh` — thin wrappers for `vps-lightsail setup` / `teardown` / `export --qr`
+- `provision.sh` — symlink → `cli/vps_lightsail/core/resources/provision.sh`, the one server script (`VPS_PEERS`)
+- `swap-ip.sh` — swap static IP (if flagged or just want a fresh one); every peer config dies → `make config`
+- `cli/` — the `vps-lightsail` CLI and agent; all AWS/SSH logic lives in `vps_lightsail.core`
 - `README.md` → start here
 
 ## HOW IT WORKS
@@ -19,7 +20,7 @@ Device → WireGuard (UDP 51820) → Lightsail VPS → internet
 ```
 
 Server: Ubuntu 24.04, wg0 on 10.8.0.1/24
-Mac peer: 10.8.0.2 | iPhone peer: 10.8.0.3
+Peers (config order): shield 10.8.0.2 (companion) | iphone 10.8.0.3 (QR); ad-hoc peers take the next free 10.8.0.x
 
 ## REGION IS A PARAM
 
@@ -52,42 +53,19 @@ aws configure --profile personal   # region: sa-east-1
 
 ## ADDING A FRIEND AS PEER
 
-Friends don't need an AWS account. Just add them as a WireGuard peer on the running server:
+Friends don't need an AWS account. Add them as an ad-hoc WireGuard peer on the running server —
+no PEM: the CLI opens its SSH session through Lightsail (`get-instance-access-details`).
 
 ```bash
-SERVER_IP=<ip>
-KEY=~/.ssh/id_ed25519   # or vps-vpn.pem for shell-based setup
-
-ssh -i $KEY ubuntu@$SERVER_IP "sudo bash" << 'EOF'
-cd /etc/wireguard
-wg genkey | tee friend_private.key | wg pubkey | tee friend_public.key
-chmod 600 friend_private.key
-FRIEND_PUB=$(cat friend_public.key)
-wg set wg0 peer $FRIEND_PUB allowed-ips 10.8.0.4/32
-echo "" >> wg0.conf
-echo "[Peer]" >> wg0.conf
-echo "PublicKey = $FRIEND_PUB" >> wg0.conf
-echo "AllowedIPs = 10.8.0.4/32" >> wg0.conf
-echo "FRIEND_PRIVATE: $(cat friend_private.key)"
-echo "SERVER_PUBLIC:  $(cat server_public.key)"
-EOF
+vps-lightsail push --name friend    # next free 10.8.0.x → dist/friend-vpn.conf (0600) + QR
 ```
 
-Then build a `.conf` for them (replace values):
-```ini
-[Interface]
-PrivateKey = <friend_private>
-Address = 10.8.0.4/32
-DNS = 1.1.1.1
+Send them `dist/friend-vpn.conf` (or let them scan the QR). Running it again adds another peer;
+the old one stays on the server until `teardown`. Declarative alternative: add
+`{name: friend, type: qr}` to the agent YAML before `vps-lightsail setup --config agent.yaml`.
 
-[Peer]
-PublicKey = <server_public>
-Endpoint = <server_ip>:51820
-AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25
-```
-
-Each additional peer uses a new IP: `10.8.0.5/32`, `10.8.0.6/32`, etc.
+Re-send the Shield's config with `vps-lightsail push --peer shield`; rewrite every conf with
+`vps-lightsail export --qr`.
 
 ## COST STRATEGY
 
@@ -95,6 +73,10 @@ Each additional peer uses a new IP: `10.8.0.5/32`, `10.8.0.6/32`, etc.
 - **Kill when done**: ~$0.007/hr → watching 4h/week = ~$0.12/mo
   - `make tf-teardown` after watching, `make tf-setup` next time
   - New setup = new WireGuard keys = re-import config on all devices
+- **Stop/start** (`vps-lightsail stop` / `start`): keeps keys, peers and static IP, but
+  **does not save money** — Lightsail bills stopped instances. Use it to make sure no client
+  routes traffic. `stop` first sends `POST /disconnect` to companion devices, because a device
+  whose tunnel is still up (`AllowedIPs = 0.0.0.0/0`) loses internet when the server is down.
 
 ## COSTS
 

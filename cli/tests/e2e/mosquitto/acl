@@ -1,0 +1,39 @@
+# Mosquitto ACL — homelab (spec-03). Everything not listed is denied.
+# Topic contract: vps-lightsail spec-01 §5.1 (BASE=vps_lightsail, DISC=homeassistant).
+# A new vps_lightsail/cmd/<action> needs a new "homeassistant" write line here.
+
+# --- VPS Lightsail agent: owns its tree and its device discovery message --------
+user vps-lightsail-agent
+topic readwrite vps_lightsail/#
+topic readwrite homeassistant/device/vps_lightsail/config
+topic read homeassistant/status
+
+# --- Home Assistant --------------------------------------------------------------
+user homeassistant
+topic read homeassistant/#
+topic write homeassistant/status
+topic read vps_lightsail/#
+topic write vps_lightsail/cmd/start
+topic write vps_lightsail/cmd/stop
+topic write vps_lightsail/cmd/create
+topic write vps_lightsail/cmd/destroy
+topic write vps_lightsail/cmd/peer/+/connect
+topic write vps_lightsail/cmd/peer/+/disconnect
+topic write vps_lightsail/config/+/set
+
+# --- ring-mqtt: RTSP bridge; its HA discovery is intentionally not allowed ------
+user ring-mqtt
+topic readwrite ring/#
+topic read homeassistant/status
+topic read hass/status
+topic read hassio/status
+
+# --- observer: read-only, for tests and debugging --------------------------------
+user observer
+topic read #
+topic read $SYS/#
+
+# --- test only (vps-lightsail e2e harness) ----------------------------------------
+user e2e-observer
+topic read #
+topic read $SYS/#

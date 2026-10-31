@@ -1,0 +1,136 @@
+blueprint:
+  name: "VPS Lightsail: agent offline"
+  description: >-
+    Notifies when the vps-lightsail entities stay unavailable for M minutes
+    (agent stopped, crashed, or the MQTT broker is unreachable), and when they
+    come back. The VPS itself may still be running (and billed) meanwhile.
+  domain: automation
+  author: vps-lightsail contributors
+  source_url: https://github.com/guicheffer/vps-lightsail/blob/main/homeassistant/blueprints/automation/vps_lightsail/agent_offline.yaml
+  homeassistant:
+    min_version: "2024.10.0"
+  input:
+    detection:
+      name: Detection
+      icon: mdi:lan-disconnect
+      input:
+        state_entity:
+          name: VPS state sensor
+          default: sensor.vps_lightsail_state
+          selector:
+            entity:
+              filter:
+                - domain: sensor
+                  integration: mqtt
+        offline_minutes:
+          name: Minutes before alerting
+          default: 15
+          selector:
+            number:
+              min: 1
+              max: 1440
+              step: 1
+              unit_of_measurement: min
+              mode: box
+        send_recovery:
+          name: Send a notice when it is back
+          default: true
+          selector:
+            boolean: {}
+    targets:
+      name: Notification targets
+      icon: mdi:bell-ring
+      description: Fill at least one. Every filled target is notified.
+      input:
+        notify_devices:
+          name: Mobile app devices
+          default: []
+          selector:
+            device:
+              multiple: true
+              filter:
+                - integration: mobile_app
+        notify_entities:
+          name: Notify entities
+          default: []
+          selector:
+            entity:
+              multiple: true
+              filter:
+                - domain: notify
+        notify_action:
+          name: Legacy notify action
+          default: ""
+          selector:
+            text: {}
+
+mode: single
+max_exceeded: silent
+
+triggers:
+  - trigger: state
+    id: offline
+    entity_id: !input state_entity
+    to: unavailable
+    for:
+      minutes: !input offline_minutes
+
+variables:
+  state_entity: !input state_entity
+  notify_devices: !input notify_devices
+  notify_entities: !input notify_entities
+  notify_action: !input notify_action
+  send_recovery: !input send_recovery
+  offline_minutes: !input offline_minutes
+  tag: vps_lightsail_agent_offline
+  interruption: active
+  title: "VPS Lightsail: agent offline"
+  message: >-
+    No data from vps-lightsail-agent for {{ offline_minutes | int }}+ min
+    (agent or MQTT broker down). The VPS may still be running and billed.
+
+actions:
+  - &notify_all
+    alias: Notify every configured target
+    sequence:
+      - repeat:
+          for_each: "{{ notify_devices }}"
+          sequence:
+            - action: "notify.mobile_app_{{ device_attr(repeat.item, 'name') | slugify }}"
+              continue_on_error: true
+              data:
+                title: "{{ title }}"
+                message: "{{ message }}"
+                data:
+                  tag: "{{ tag }}"
+                  group: vps_lightsail
+                  push:
+                    interruption-level: "{{ interruption }}"
+      - if: "{{ notify_entities | count > 0 }}"
+        then:
+          - action: notify.send_message
+            continue_on_error: true
+            target:
+              entity_id: "{{ notify_entities }}"
+            data:
+              title: "{{ title }}"
+              message: "{{ message }}"
+      - if: "{{ notify_action | trim | length > 0 }}"
+        then:
+          - action: >-
+              {% set a = notify_action | trim %}{{ a if '.' in a else 'notify.' ~ a }}
+            continue_on_error: true
+            data:
+              title: "{{ title }}"
+              message: "{{ message }}"
+  - if: "{{ send_recovery }}"
+    then:
+      - wait_for_trigger:
+          - trigger: state
+            entity_id: !input state_entity
+            from: unavailable
+            not_to: unknown
+      - variables:
+          title: "VPS Lightsail: agent back online"
+          message: "vps-lightsail-agent is publishing again (VPS state: {{ states(state_entity) }})."
+      - *notify_all

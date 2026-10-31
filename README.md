@@ -40,7 +40,7 @@ make setup REGION=eu-west-1       # Ireland
 make setup REGION=ap-east-1       # Hong Kong
 ```
 
-Outputs `mac-vpn.conf` + iPhone QR code in terminal.
+Prints the iPhone QR code, writes `dist/<peer>-vpn.conf` (0600) for every peer and pushes the Shield's config to its companion app. Peers come from `--config agent.yaml` (the agent YAML) or the default `shield` (companion, 10.8.0.2) + `iphone` (QR, 10.8.0.3).
 
 ```bash
 make help      # all commands
@@ -64,12 +64,10 @@ cp terraform.tfvars.example terraform.tfvars
 # edit terraform.tfvars with your region/keys
 cd ..
 
-make tf-setup     # terraform apply + auto-fetch mac-vpn.conf + iPhone QR
+make tf-setup     # terraform apply + make config (dist/shield-vpn.conf + iPhone QR)
 ```
 
-`make tf-setup` runs `terraform apply` then fetches the client configs
-automatically — same `mac-vpn.conf` + iPhone QR as `make setup`.
-Run `make config` any time to re-fetch them from the running server.
+`make tf-setup` runs `terraform apply` — same instance name, static IP `vps-vpn-static-ip` and peers as `make setup` (`peers` is a Terraform variable) — then `make config`, i.e. `vps-lightsail export --qr`. Run `make config` any time to re-fetch the configs.
 
 ---
 
@@ -77,7 +75,7 @@ Run `make config` any time to re-fetch them from the running server.
 
 **Mac**
 1. Open WireGuard app
-2. `+` → Import tunnel → select `mac-vpn.conf`
+2. `+` → Import tunnel → select a `dist/<peer>-vpn.conf` (add a Mac peer first: `vps-lightsail push --name mac`, or a `{name: mac, type: qr}` entry in the agent YAML before `setup --config`)
 3. Activate
 
 **iPhone**
@@ -88,13 +86,28 @@ Run `make config` any time to re-fetch them from the running server.
 **Apple TV**
 1. Install [VPN Client Bee](https://apps.apple.com/app/vpn-client-bee/id1633151022) from the App Store
 2. Select **WireGuard** → **Custom Server List**
-3. Add server manually with the values from `mac-vpn.conf` (same config, different device slot)
+3. Add server manually with the values from its own `dist/<peer>-vpn.conf` (one peer per device)
 4. Connect
 
 **Verify IP**
 ```
 https://ifconfig.me
 ```
+
+---
+
+## Peers
+
+```bash
+vps-lightsail export --qr                  # rewrite dist/<peer>-vpn.conf + print QR (= make config)
+vps-lightsail push --peer shield           # re-send the Shield's config and activate it
+vps-lightsail push --peer shield --stage   # store only (companion API v2); connect later from HA
+vps-lightsail push --name laptop             # extra ad-hoc peer → dist/laptop-vpn.conf + QR
+vps-lightsail push --device <shield-ip>    # legacy: new ad-hoc peer pushed to that device
+```
+
+Declarative peers (config order → `10.8.0.(2+i)`) keep their keys until teardown; ad-hoc peers
+take the next free `10.8.0.x` and stay on the server until teardown.
 
 ---
 
@@ -111,10 +124,10 @@ The site sees the VPS region IP — not your real location.
 ## Teardown
 
 ```bash
-./teardown.sh
+./teardown.sh               # or: make teardown
 ```
 
-Deletes instance + static IP + key pair. No leftover charges.
+Disconnects the Shield first, releases every static IP (by name and by attachment), deletes the instance and the legacy key pair: zero instances, zero static IPs, no leftover charges. Removes `dist/*-vpn.conf`. `vps-lightsail repair` releases orphaned static IPs left by an interrupted run.
 
 ---
 
@@ -124,7 +137,7 @@ Deletes instance + static IP + key pair. No leftover charges.
 ./swap-ip.sh
 ```
 
-Releases current IP, attaches a new one. Update endpoint in WireGuard app after.
+Releases the current IP and attaches a new one under the same name (the agent keeps tracking it). Every peer config dies (the endpoint changes): run `make config` (rewrites `dist/*-vpn.conf`, prints a new QR) and `vps-lightsail push --peer shield`.
 
 ---
 
